@@ -55,8 +55,8 @@ public:
    */
   OATPP_CREATE_COMPONENT(std::shared_ptr<oatpp::async::Executor>, executor)([] {
     return std::make_shared<oatpp::async::Executor>(
-      4,  /* processorWorkers */
-      2,  /* ioWorkers */
+      8,  /* processorWorkers */
+      8,  /* ioWorkers */
       1   /* timerWorkers */
     );
   }());
