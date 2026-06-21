@@ -1,0 +1,11 @@
+scenario,req_per_sec,avg_ms,p99_ms
+Hello World,146002,0.47,2.53
+JSON (small),114543,0.69,3.26
+JSON (large),79495,1.21,4.67
+Path Param,117708,0.62,3.06
+Query Params,119251,0.61,2.79
+Echo Body,131843,0.52,2.07
+Multi Headers,116197,0.63,2.70
+Mixed Types,103114,0.79,2.93
+Nested JSON,110869,0.69,2.53
+Array (x100),2258,43.98,48.26
