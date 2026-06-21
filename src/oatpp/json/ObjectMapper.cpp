@@ -28,8 +28,6 @@
 #include "./FastDeserializer.hpp"
 #include "./Utils.hpp"
 
-#include "oatpp/data/stream/BufferStream.hpp"
-
 namespace oatpp { namespace json {
 
 ObjectMapper::ObjectMapper(const SerializerConfig& serializerConfig, const DeserializerConfig& deserializerConfig)
