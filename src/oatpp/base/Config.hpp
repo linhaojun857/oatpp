@@ -66,13 +66,13 @@
  * Enable FastSerializer JSON fast path — bypasses Tree for serialization.
  * Comment out to fall back to the safe Tree-based path.
  */
-// #define OATPP_USE_JSON_FAST_SERIALIZER
+#define OATPP_USE_JSON_FAST_SERIALIZER
 
 /**
  * Enable FastDeserializer JSON fast path — bypasses Tree for deserialization.
  * Comment out to fall back to the safe Tree-based path.
  */
-// #define OATPP_USE_JSON_FAST_DESERIALIZER
+#define OATPP_USE_JSON_FAST_DESERIALIZER
 
 #ifndef OATPP_FLOAT_STRING_FORMAT
   #define OATPP_FLOAT_STRING_FORMAT "%.16g"

@@ -10,8 +10,8 @@ cd "$SCRIPT_DIR/../.."
 export BUILD_DIR="${BUILD_DIR:-build}"
 export PORT="${PORT:-8000}"
 export DURATION="${DURATION:-10s}"
-export CONNECTIONS="${CONNECTIONS:-100}"
-export THREADS="${THREADS:-4}"
+export CONNECTIONS="${CONNECTIONS:-1000}"
+export THREADS="${THREADS:-10}"
 
 export PYTHONDONTWRITEBYTECODE=1
 exec python3 -B "$SCRIPT_DIR/run-benchmark.py" "${1:-sync}"

@@ -57,7 +57,7 @@ public:
     return std::make_shared<oatpp::async::Executor>(
       8,  /* processorWorkers */
       8,  /* ioWorkers */
-      1   /* timerWorkers */
+      2   /* timerWorkers */
     );
   }());
 
