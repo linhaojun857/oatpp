@@ -62,6 +62,18 @@
  */
 //#define OATPP_COMPAT_BUILD_NO_THREAD_LOCAL 1
 
+/**
+ * Enable FastSerializer JSON fast path — bypasses Tree for serialization.
+ * Comment out to fall back to the safe Tree-based path.
+ */
+#define OATPP_USE_JSON_FAST_SERIALIZER
+
+/**
+ * Enable FastDeserializer JSON fast path — bypasses Tree for deserialization.
+ * Comment out to fall back to the safe Tree-based path.
+ */
+#define OATPP_USE_JSON_FAST_DESERIALIZER
+
 #ifndef OATPP_FLOAT_STRING_FORMAT
   #define OATPP_FLOAT_STRING_FORMAT "%.16g"
 #endif

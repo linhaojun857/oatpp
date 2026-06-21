@@ -140,6 +140,10 @@ add_library(oatpp
 		oatpp/json/Beautifier.hpp
 		oatpp/json/Deserializer.cpp
 		oatpp/json/Deserializer.hpp
+		oatpp/json/FastSerializer.cpp
+		oatpp/json/FastSerializer.hpp
+		oatpp/json/FastDeserializer.cpp
+		oatpp/json/FastDeserializer.hpp
 		oatpp/json/ObjectMapper.cpp
 		oatpp/json/ObjectMapper.hpp
 		oatpp/json/Serializer.cpp

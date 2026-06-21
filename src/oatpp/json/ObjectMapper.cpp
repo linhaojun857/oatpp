@@ -24,6 +24,12 @@
 
 #include "ObjectMapper.hpp"
 
+#include "./FastSerializer.hpp"
+#include "./FastDeserializer.hpp"
+#include "./Utils.hpp"
+
+#include "oatpp/data/stream/BufferStream.hpp"
+
 namespace oatpp { namespace json {
 
 ObjectMapper::ObjectMapper(const SerializerConfig& serializerConfig, const DeserializerConfig& deserializerConfig)
@@ -44,13 +50,24 @@ void ObjectMapper::writeTree(data::stream::ConsistentOutputStream* stream, const
 }
 
 void ObjectMapper::write(data::stream::ConsistentOutputStream* stream, const oatpp::Void& variant, data::mapping::ErrorStack& errorStack) const {
-
-  /* if variant is Tree - we can serialize it right away */
-  if(variant.getValueType() == oatpp::Tree::Class::getType()) {
+  const auto* type = variant.getValueType();
+  if (!type) {
+    errorStack.push("[oatpp::json::ObjectMapper::write()]: Error. Unknown type.");
+    return;
+  }
+  /* if variant is Tree - serialize via existing Serializer */
+  if(type == oatpp::Tree::Class::getType()) {
     auto tree = static_cast<const data::mapping::Tree*>(variant.get());
     writeTree(stream, *tree, errorStack);
     return;
   }
+
+#ifdef OATPP_USE_JSON_FAST_SERIALIZER
+  if (Utils::isBuiltinType(type)) {
+    FastSerializer::serialize(stream, variant, errorStack, m_serializerConfig.mapper, m_serializerConfig.json);
+    return;
+  }
+#endif
 
   data::mapping::Tree tree;
   data::mapping::ObjectToTreeMapper::State state;
@@ -69,6 +86,17 @@ void ObjectMapper::write(data::stream::ConsistentOutputStream* stream, const oat
 }
 
 oatpp::Void ObjectMapper::read(utils::parser::Caret& caret, const data::type::Type* type, data::mapping::ErrorStack& errorStack) const {
+  if (!type) {
+    errorStack.push("[oatpp::json::ObjectMapper::read()]: Error. Unknown type.");
+    return nullptr;
+  }
+
+#ifdef OATPP_USE_JSON_FAST_DESERIALIZER
+  if (type != data::type::Tree::Class::getType() && Utils::isBuiltinType(type)) {
+    auto result = FastDeserializer::deserialize(caret, type, errorStack, m_deserializerConfig.mapper, m_deserializerConfig.json);
+    return result;
+  }
+#endif
 
   data::mapping::Tree tree;
 
@@ -100,7 +128,6 @@ oatpp::Void ObjectMapper::read(utils::parser::Caret& caret, const data::type::Ty
     }
     return result;
   }
-
 }
 
 const data::mapping::ObjectToTreeMapper& ObjectMapper::objectToTreeMapper() const {

@@ -70,6 +70,8 @@ add_executable(oatppAllTests
         oatpp/json/DeserializerTest.hpp
         oatpp/json/DTOMapperPerfTest.cpp
         oatpp/json/DTOMapperPerfTest.hpp
+        oatpp/json/JsonStressTest.cpp
+        oatpp/json/JsonStressTest.hpp
         oatpp/json/DTOMapperTest.cpp
         oatpp/json/DTOMapperTest.hpp
         oatpp/json/EnumTest.cpp
