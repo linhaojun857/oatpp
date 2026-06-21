@@ -169,14 +169,10 @@ HTML = r"""<!DOCTYPE html>
   td.num{text-align:right;font-variant-numeric:tabular-nums}
   td.rps{color:#f0f6fc;font-weight:500}
   td.pending{color:#484f58}
-  .summary{margin-top:24px;padding-top:16px;border-top:1px solid #21262d;
-           color:#f0f6fc;font-size:15px;font-weight:600}
-  .csv-link{color:#58a6ff;text-decoration:none;font-size:13px;display:inline-block;margin-top:12px}
-  .csv-link:hover{text-decoration:underline}
 </style>
 </head>
 <body>
-<h1>oatpp Benchmark Suite</h1>
+<h1>oatpp Benchmark</h1>
 <p class="meta">
   server=<span>SERVER</span> &middot;
   duration=<span>DUR</span> &middot;
@@ -189,8 +185,6 @@ HTML = r"""<!DOCTYPE html>
 <thead><tr><th>Scenario</th><th class="num">Req/sec</th><th class="num">Avg</th><th class="num">P99</th></tr></thead>
 <tbody id="tbody"></tbody>
 </table>
-<p class="summary" id="summary" style="display:none"></p>
-<p><a class="csv-link" id="csv-link" style="display:none"></a></p>
 <script>
 var SCENARIOS = SCENARIOS_JSON;
 var pollTimer = null;
@@ -233,21 +227,6 @@ function poll(){
 
       // Done
       if(s.status === 'done'){
-        var total = 0, ok = 0;
-        (s.results||[]).forEach(function(r){
-          if(r.rps !== 'FAILED'){ total += (r.rps_raw||0); ok++; }
-        });
-        document.getElementById('summary').textContent =
-          'TOTAL ' + ok + '/10 · ' + total.toLocaleString() + ' req/sec';
-        document.getElementById('summary').style.display = 'block';
-        if(s.csv){
-          var link = document.getElementById('csv-link');
-          link.href = '#';
-          link.textContent = 'Results: ' + s.csv.split('/').pop();
-          link.style.display = 'inline-block';
-        }
-        // Final poll in 2s to catch csv path
-        setTimeout(poll, 2000);
         pollTimer = null;
       }
     });
