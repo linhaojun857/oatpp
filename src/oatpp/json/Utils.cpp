@@ -202,9 +202,9 @@ v_buff_size Utils::float64ToChars(v_float64 value, char* buffer) noexcept {
     }
   }
 
-  // General case: use snprintf with %.17g (round-trip safe)
+  // General case: use snprintf with %.16g (round-trip safe for double)
   // This is the fallback; for full speed, integrate Grisu3 or Ryu.
-  int len = std::snprintf(buffer, 64, "%.17g", value);
+  int len = std::snprintf(buffer, 64, "%.16g", value);
   return static_cast<v_buff_size>(len > 0 ? len : 0);
 }
 

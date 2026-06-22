@@ -391,8 +391,8 @@ static bool serializeObject(
     /* Write comma + newline + indent before each field (except first) */
     if (!first) {
       stream->writeCharSimple(',');
+      writeContainerNewline(stream, jsonConfig, childIndent);
     }
-    writeContainerNewline(stream, jsonConfig, childIndent);
     first = false;
 
     /* Serialize field key */
@@ -453,8 +453,8 @@ static bool serializeCollection(
 
     if (!first) {
       stream->writeCharSimple(',');
+      writeContainerNewline(stream, jsonConfig, childIndent);
     }
-    writeContainerNewline(stream, jsonConfig, childIndent);
     first = false;
 
     if (!serializeImpl(stream, item, errorStack,
@@ -513,8 +513,8 @@ static bool serializeMap(
 
     if (!first) {
       stream->writeCharSimple(',');
+      writeContainerNewline(stream, jsonConfig, childIndent);
     }
-    writeContainerNewline(stream, jsonConfig, childIndent);
     first = false;
 
     /* Serialize map key */

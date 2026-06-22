@@ -5,6 +5,8 @@
 # =============================================================================
 set -uo pipefail
 
+export BUILD_DIR="${BUILD_DIR:-build-benchmark}"
+
 RED='\033[31m'; GRN='\033[32m'; CYN='\033[36m'; DIM='\033[2m'; RST='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -30,15 +32,15 @@ echo ""
 # ---- Build -----------------------------------------------------------------
 echo -e "  ${DIM}Building...${RST}"
 cd "$PROJECT_ROOT"
-cmake -S . -B build -DOATPP_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release \
+cmake -S . -B $BUILD_DIR -DOATPP_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release -DOATPP_USE_JSON_FAST_SERIALIZER=ON -DOATPP_USE_JSON_FAST_DESERIALIZER=ON \
     -DOATPP_BUILD_TESTS=OFF > /dev/null 2>&1
-cmake --build build --target "$BENCH_BINARY" -j"$(nproc)" > /dev/null 2>&1
+cmake --build $BUILD_DIR --target "$BENCH_BINARY" -j"$(nproc)" > /dev/null 2>&1
 
 # ---- Start server -----------------------------------------------------------
 echo -e "  ${DIM}Starting ${SERVER} server...${RST}"
 lsof -ti ":${PORT}" | xargs kill -9 2>/dev/null; true
 sleep 0.3
-"$PROJECT_ROOT/build/benchmark/$BENCH_BINARY" "$PORT" > /dev/null 2>&1 &
+"$PROJECT_ROOT/$BUILD_DIR/benchmark/$BENCH_BINARY" "$PORT" > /dev/null 2>&1 &
 SERVER_PID=$!
 
 for i in $(seq 1 15); do
