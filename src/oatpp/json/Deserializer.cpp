@@ -27,6 +27,8 @@
 #include "oatpp/data/stream/BufferStream.hpp"
 #include "oatpp/utils/Conversion.hpp"
 
+#include <limits>
+
 namespace oatpp { namespace json {
 
 void Deserializer::deserializeNull(State& state) {
@@ -39,7 +41,17 @@ void Deserializer::deserializeNull(State& state) {
 
 void Deserializer::deserializeNumber(State& state) {
   if (!Utils::findDecimalSeparatorInCurrentNumber(*state.caret)) {
-    state.tree->setInteger(state.caret->parseInt());
+    // Integer — for positive numbers use unsigned parsing to support uint64 range
+    if (state.caret->isAtChar('-')) {
+      state.tree->setInteger(state.caret->parseInt());
+    } else {
+      v_uint64 uval = state.caret->parseUnsignedInt();
+      if (uval > static_cast<v_uint64>(std::numeric_limits<v_int64>::max())) {
+        state.tree->setPrimitive<v_uint64>(uval);
+      } else {
+        state.tree->setInteger(static_cast<v_int64>(uval));
+      }
+    }
   } else {
     state.tree->setFloat(state.caret->parseFloat64());
   }

@@ -862,9 +862,10 @@ std::string Utils::parseStringToStdString(ParsingCaret& caret){
 bool Utils::findDecimalSeparatorInCurrentNumber(ParsingCaret& caret) {
   utils::parser::Caret::StateSaveGuard stateGuard(caret);
 
-  // search until a decimal separator is found or no more digits/sign are found or no more data available
+  // search until a decimal or exponent separator is found or no more digits/sign or data available
   while(caret.canContinue()) {
-    if (caret.isAtChar(JSON_DECIMAL_SEPARATOR)) {
+    if (caret.isAtChar(JSON_DECIMAL_SEPARATOR) ||
+        caret.isAtChar('e') || caret.isAtChar('E')) {
       return true;
     }
     if (!caret.isAtDigitChar() && !caret.isAtChar('-')) {
