@@ -7,7 +7,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
-export BUILD_DIR="${BUILD_DIR:-build}"
+export BUILD_DIR="${BUILD_DIR:-build-benchmark}"
 export PORT="${PORT:-8000}"
 export DURATION="${DURATION:-10s}"
 export CONNECTIONS="${CONNECTIONS:-1000}"

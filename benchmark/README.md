@@ -51,11 +51,11 @@ Opens `http://localhost:8080` — results stream in as benchmarks run.
 
 ```bash
 # Build
-cmake -S . -B build -DOATPP_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target benchmark-sync -j$(nproc)
+cmake -S . -B build-benchmark -DOATPP_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-benchmark --target benchmark-sync -j$(nproc)
 
 # Start server
-./build/benchmark/benchmark-sync 8000
+./build-benchmark/benchmark/benchmark-sync 8000
 
 # Run wrk
 wrk -t4 -c100 -d30s -s benchmark/scripts/hello.lua --latency http://localhost:8000
@@ -76,7 +76,7 @@ benchmark/
 │   └── App.cpp               # main()
 └── scripts/
     ├── run-benchmark.sh      # Shell wrapper
-    ├── run_bench.py          # Python dashboard + runner
+    ├── run-benchmark.py      # Python dashboard + runner
     └── *.lua                 # 10 wrk scripts
 ```
 

@@ -11,6 +11,7 @@ import os, sys, subprocess, re, json, time, threading, csv, traceback
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+BUILD_DIR  = os.environ.get("BUILD_DIR", "build-benchmark")
 PORT       = int(os.environ.get("PORT", "8000"))
 DURATION   = os.environ.get("DURATION", "10s")
 CONN       = os.environ.get("CONNECTIONS", "100")
@@ -296,11 +297,12 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     # Build
     print(f"Building {BENCH_BINARY}...", flush=True)
-    subprocess.run(["cmake", "-S", ROOT, "-B", "build",
+    subprocess.run(["cmake", "-S", ROOT, "-B", BUILD_DIR,
                     "-DOATPP_BUILD_BENCHMARKS=ON", "-DCMAKE_BUILD_TYPE=Release",
+                    "-DOATPP_USE_JSON_FAST_SERIALIZER=ON", "-DOATPP_USE_JSON_FAST_DESERIALIZER=ON"
                     "-DOATPP_BUILD_TESTS=OFF"],
                    capture_output=True, check=False)
-    r = subprocess.run(["cmake", "--build", "build", "--target", BENCH_BINARY,
+    r = subprocess.run(["cmake", "--build", BUILD_DIR, "--target", BENCH_BINARY,
                         "-j", str(os.cpu_count() or 4)],
                        cwd=ROOT, capture_output=True, check=False)
     if r.returncode != 0:
@@ -316,7 +318,7 @@ def main():
 
     # Start oatpp server
     print(f"Starting {SERVER_TYPE} server on port {PORT}...", flush=True)
-    subprocess.Popen([os.path.join(ROOT, "build", "benchmark", BENCH_BINARY), str(PORT)],
+    subprocess.Popen([os.path.join(ROOT, BUILD_DIR, "benchmark", BENCH_BINARY), str(PORT)],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1)
 
