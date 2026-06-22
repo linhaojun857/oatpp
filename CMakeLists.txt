@@ -44,6 +44,9 @@ set(OATPP_THREAD_HARDWARE_CONCURRENCY "AUTO" CACHE STRING "Predefined value for 
 option(OATPP_COMPAT_BUILD_NO_THREAD_LOCAL "Disable 'thread_local' feature" OFF)
 option(OATPP_COMPAT_BUILD_NO_SET_AFFINITY "No 'pthread_setaffinity_np' method" OFF)
 
+option(OATPP_USE_JSON_FAST_SERIALIZER "Enable JSON fast serialization path (bypasses Tree)" OFF)
+option(OATPP_USE_JSON_FAST_DESERIALIZER "Enable JSON fast deserialization path (bypasses Tree)" OFF)
+
 option(OATPP_DISABLE_LOGV "DISABLE logs priority V" OFF)
 option(OATPP_DISABLE_LOGD "DISABLE logs priority D" OFF)
 option(OATPP_DISABLE_LOGI "DISABLE logs priority I" OFF)
@@ -55,6 +58,8 @@ option(OATPP_DISABLE_LOGE "DISABLE logs priority E" OFF)
 message("\n############################################################################")
 message("## oatpp module compilation config:\n")
 
+message("OATPP_USE_JSON_FAST_SERIALIZER=${OATPP_USE_JSON_FAST_SERIALIZER}")
+message("OATPP_USE_JSON_FAST_DESERIALIZER=${OATPP_USE_JSON_FAST_DESERIALIZER}")
 message("OATPP_DISABLE_ENV_OBJECT_COUNTERS=${OATPP_DISABLE_ENV_OBJECT_COUNTERS}")
 message("OATPP_THREAD_HARDWARE_CONCURRENCY=${OATPP_THREAD_HARDWARE_CONCURRENCY}")
 message("OATPP_COMPAT_BUILD_NO_THREAD_LOCAL=${OATPP_COMPAT_BUILD_NO_THREAD_LOCAL}")
@@ -86,6 +91,14 @@ endif()
 
 if(OATPP_COMPAT_BUILD_NO_SET_AFFINITY)
     add_definitions(-DOATPP_COMPAT_BUILD_NO_SET_AFFINITY)
+endif()
+
+if(OATPP_USE_JSON_FAST_SERIALIZER)
+    add_definitions(-DOATPP_USE_JSON_FAST_SERIALIZER)
+endif()
+
+if(OATPP_USE_JSON_FAST_DESERIALIZER)
+    add_definitions(-DOATPP_USE_JSON_FAST_DESERIALIZER)
 endif()
 
 if(OATPP_DISABLE_LOGV)
