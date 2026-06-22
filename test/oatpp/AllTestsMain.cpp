@@ -22,6 +22,7 @@
 #include "oatpp/json/DeserializerTest.hpp"
 #include "oatpp/json/DTOMapperPerfTest.hpp"
 #include "oatpp/json/DTOMapperTest.hpp"
+#include "oatpp/json/JsonTest.hpp"
 #include "oatpp/json/EnumTest.hpp"
 #include "oatpp/json/BooleanTest.hpp"
 #include "oatpp/json/UnorderedSetTest.hpp"
@@ -165,6 +166,8 @@ void runTests() {
 
   RUN_TEST_IF_0(oatpp::json::EnumTest);
   RUN_TEST_IF_0(oatpp::json::BooleanTest);
+
+  RUN_TEST_IF_0(oatpp::json::JsonTest);
 
   RUN_TEST_IF_0(oatpp::json::UnorderedSetTest);
 

@@ -75,6 +75,22 @@ static bool deserializeMap(const char* jsonData,
 static oatpp::String deserializeJsonString(const char* jsonData,
     const std::vector<StructuralItem>& items, size_t& idx);
 
+/**
+ * Wrap a deserialized value in an AnyHandle for Any-typed targets.
+ * Returns the original value if the target type is not Any.
+ */
+static oatpp::Void wrapInAnyHandle(const oatpp::Void& value, const data::type::Type* targetType) {
+  if (!targetType || targetType->classId != oatpp::Any::Class::CLASS_ID) {
+    return value;
+  }
+  const data::type::Type* storedType = value.getValueType();
+  if (!storedType && value.getPtr()) {
+    storedType = oatpp::String::Class::getType();
+  }
+  auto ah = std::make_shared<data::type::AnyHandle>(value.getPtr(), storedType);
+  return oatpp::Void(ah, oatpp::Any::Class::getType());
+}
+
 // ============================================================================
 // Stage 1: Scan JSON buffer for structural characters
 // ============================================================================
@@ -195,6 +211,13 @@ static bool parseIntToType(
     const char* data, v_buff_size len,
     const data::type::ClassId& cid, oatpp::Void& result)
 {
+  if (cid == oatpp::UInt64::Class::CLASS_ID) {
+    v_uint64 uv;
+    if (!Utils::parseUInt64(data, len, uv)) return false;
+    result = oatpp::UInt64(uv);
+    return true;
+  }
+
   v_int64 iv;
   if (!Utils::parseInt64(data, len, iv)) return false;
 
@@ -212,8 +235,6 @@ static bool parseIntToType(
     result = oatpp::UInt16(static_cast<v_uint16>(iv));
   } else if (cid == oatpp::UInt32::Class::CLASS_ID) {
     result = oatpp::UInt32(static_cast<v_uint32>(iv));
-  } else if (cid == oatpp::UInt64::Class::CLASS_ID) {
-    result = oatpp::UInt64(static_cast<v_uint64>(iv));
   } else if (cid == oatpp::Float32::Class::CLASS_ID) {
     result = oatpp::Float32(static_cast<v_float32>(iv));
   } else if (cid == oatpp::Float64::Class::CLASS_ID) {
@@ -402,7 +423,7 @@ static bool deserializePrimitiveValue(
         /* String to Enum conversion */
         auto str = result.cast<oatpp::String>();
         parseStringToEnum(str, type, result, mapperConfig.useUnqualifiedEnumNames);
-      } else if (cid != oatpp::String::Class::CLASS_ID) {
+      } else if (cid != oatpp::String::Class::CLASS_ID && cid != oatpp::Any::Class::CLASS_ID) {
         /* Lexical cast from string to target numeric type */
         if (mapperConfig.allowLexicalCasting) {
           auto str = result.cast<oatpp::String>();
@@ -423,6 +444,7 @@ static bool deserializePrimitiveValue(
         }
       }
     }
+    result = wrapInAnyHandle(result, type);
     return true;
   }
 
@@ -443,6 +465,7 @@ static bool deserializePrimitiveValue(
     } else {
       result = nullptr;
     }
+    result = wrapInAnyHandle(result, type);
     return true;
   }
 
@@ -464,6 +487,7 @@ static bool deserializePrimitiveValue(
     } else {
       result = oatpp::Boolean(isTrue);
     }
+    result = wrapInAnyHandle(result, type);
     return true;
   }
 
@@ -477,6 +501,23 @@ static bool deserializePrimitiveValue(
   if (!type) return true; /* no target type → nothing to parse into */
 
   const auto& cid = type->classId;
+
+  /* Any type: parse number and wrap in AnyHandle */
+  if (cid == oatpp::Any::Class::CLASS_ID) {
+    if (!isFloat) {
+      v_int64 iv;
+      if (Utils::parseInt64(valData, valLen, iv)) {
+        result = wrapInAnyHandle(oatpp::Int64(iv), type);
+        return true;
+      }
+    }
+    v_float64 fv;
+    if (Utils::parseFloat64(valData, valLen, fv)) {
+      result = wrapInAnyHandle(oatpp::Float64(fv), type);
+      return true;
+    }
+    return false;
+  }
 
   /* Enum from number */
   if (cid == data::type::__class::AbstractEnum::CLASS_ID) {
@@ -580,6 +621,16 @@ static bool deserializeValue(
                    type->classId == data::type::__class::AbstractUnorderedMap::CLASS_ID)) {
         return deserializeMap(jsonData, items, idx, type, result, mapperConfig);
       }
+      /* Any type: deserialize as UnorderedFields<Any> */
+      if (type && type->classId == oatpp::Any::Class::CLASS_ID) {
+        auto mapType = oatpp::UnorderedFields<oatpp::Any>::Class::getType();
+        oatpp::Void mapResult;
+        if (deserializeMap(jsonData, items, idx, mapType, mapResult, mapperConfig)) {
+          result = wrapInAnyHandle(mapResult, type);
+          return true;
+        }
+        return false;
+      }
       /* Unknown object — skip over it */
       { int depth = 1; idx++;
         while (idx < items.size() && depth > 0) {
@@ -598,6 +649,16 @@ static bool deserializeValue(
                    type->classId == data::type::__class::AbstractList::CLASS_ID ||
                    type->classId == data::type::__class::AbstractUnorderedSet::CLASS_ID)) {
         return deserializeArray(jsonData, items, idx, type, result, mapperConfig);
+      }
+      /* Any type: deserialize as List<Any> */
+      if (type && type->classId == oatpp::Any::Class::CLASS_ID) {
+        auto listType = oatpp::List<oatpp::Any>::Class::getType();
+        oatpp::Void listResult;
+        if (deserializeArray(jsonData, items, idx, listType, listResult, mapperConfig)) {
+          result = wrapInAnyHandle(listResult, type);
+          return true;
+        }
+        return false;
       }
       /* Unknown array — skip over it */
       { int depth = 1; idx++;
@@ -867,7 +928,7 @@ oatpp::Void FastDeserializer::deserialize(
   const char* jsonData = caret.getData() + caret.getPosition();
   size_t jsonLen = caret.getDataSize() - caret.getPosition();
 
-  if (!jsonData || jsonLen < 2 || !type) return nullptr;
+  if (!jsonData || jsonLen < 1 || !type) return nullptr;
 
   /* Stage 1: scan JSON buffer for structural characters */
   std::vector<StructuralItem> items;

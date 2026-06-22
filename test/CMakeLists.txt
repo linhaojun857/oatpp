@@ -74,6 +74,8 @@ add_executable(oatppAllTests
         oatpp/json/JsonStressTest.hpp
         oatpp/json/DTOMapperTest.cpp
         oatpp/json/DTOMapperTest.hpp
+        oatpp/json/JsonTest.cpp
+        oatpp/json/JsonTest.hpp
         oatpp/json/EnumTest.cpp
         oatpp/json/EnumTest.hpp
         oatpp/json/UnorderedSetTest.cpp
