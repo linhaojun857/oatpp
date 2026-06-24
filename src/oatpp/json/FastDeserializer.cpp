@@ -46,137 +46,7 @@
 namespace oatpp { namespace json {
 
 // ============================================================================
-// Structural scan data types
-// ============================================================================
-
-struct StructuralItem {
-  uint32_t pos;    // byte offset in JSON buffer
-  uint8_t  type;   // '{' '}' '[' ']' ':' ',' '"'
-  uint8_t  flags;  // 0: opening quote, 1: closing quote
-};
-
-// Forward declarations for recursive deserialize functions
-static bool deserializeValue(const char* jsonData,
-    const std::vector<StructuralItem>& items, size_t& idx,
-    const data::type::Type* type, oatpp::Void& result,
-    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
-static bool deserializeObject(const char* jsonData,
-    const std::vector<StructuralItem>& items, size_t& idx,
-    const data::type::Type* type, oatpp::Void& result,
-    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
-static bool deserializeArray(const char* jsonData,
-    const std::vector<StructuralItem>& items, size_t& idx,
-    const data::type::Type* type, oatpp::Void& result,
-    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
-static bool deserializeMap(const char* jsonData,
-    const std::vector<StructuralItem>& items, size_t& idx,
-    const data::type::Type* type, oatpp::Void& result,
-    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
-static oatpp::String deserializeJsonString(const char* jsonData,
-    const std::vector<StructuralItem>& items, size_t& idx);
-
-/**
- * Wrap a deserialized value in an AnyHandle for Any-typed targets.
- * Returns the original value if the target type is not Any.
- */
-static oatpp::Void wrapInAnyHandle(const oatpp::Void& value, const data::type::Type* targetType) {
-  if (!targetType || targetType->classId != oatpp::Any::Class::CLASS_ID) {
-    return value;
-  }
-  const data::type::Type* storedType = value.getValueType();
-  if (!storedType && value.getPtr()) {
-    storedType = oatpp::String::Class::getType();
-  }
-  auto ah = std::make_shared<data::type::AnyHandle>(value.getPtr(), storedType);
-  return oatpp::Void(ah, oatpp::Any::Class::getType());
-}
-
-// ============================================================================
-// Stage 1: Scan JSON buffer for structural characters
-// ============================================================================
-
-static bool scanStructural(
-    const uint8_t* buf, size_t len,
-    std::vector<StructuralItem>& out)
-{
-  out.clear();
-  out.reserve(len / 8);
-
-  bool inString = false;
-
-  for (size_t i = 0; i < len; i++) {
-    uint8_t c = buf[i];
-    uint8_t cls = CHAR_CLASS[c];
-
-    /* Handle quote characters (open/close strings) */
-    if (cls & CC_QUOTE) {
-      if (inString) {
-        /* Count preceding backslashes — odd count means escaped quote */
-        size_t bsCount = 0, j = i;
-        while (j > 0 && buf[j - 1] == '\\') { bsCount++; j--; }
-        if (bsCount % 2 == 0) {
-          inString = false;
-          out.push_back({static_cast<uint32_t>(i), '"', 1}); /* closing quote */
-        }
-      } else {
-        inString = true;
-        out.push_back({static_cast<uint32_t>(i), '"', 0}); /* opening quote */
-      }
-      continue;
-    }
-
-    /* Skip everything inside strings */
-    if (inString) continue;
-
-    /* Record structural characters outside strings */
-    if (cls & CC_STRUCT) {
-      out.push_back({static_cast<uint32_t>(i), c, 0});
-    }
-  }
-
-  return true;
-}
-
-// ============================================================================
-// deserializeJsonString — extract and unescape a JSON string between two quotes
-// ============================================================================
-
-static oatpp::String deserializeJsonString(
-    const char* jsonData,
-    const std::vector<StructuralItem>& items,
-    size_t& idx)
-{
-  /* idx must point to an opening '"' (flags=0) */
-  uint32_t start = items[idx].pos + 1;
-  idx++; /* skip opening quote */
-
-  /* Find matching closing '"' (flags=1) */
-  while (idx < items.size() &&
-         !(items[idx].type == '"' && items[idx].flags == 1)) {
-    idx++;
-  }
-  if (idx >= items.size()) return nullptr;
-
-  uint32_t end = items[idx].pos;
-  v_buff_size rawLen = static_cast<v_buff_size>(end - start);
-  const char* strData = jsonData + start;
-
-  /* Fast path: no backslash in raw string → no unescaping needed */
-  if (!std::memchr(strData, '\\', rawLen)) {
-    idx++;
-    return oatpp::String(strData, rawLen);
-  }
-
-  /* Slow path: unescape the string */
-  v_int64 errorCode;
-  v_buff_size errorPos;
-  auto result = Utils::unescapeString(strData, rawLen, errorCode, errorPos);
-  idx++;
-  return errorCode == 0 ? result : nullptr;
-}
-
-// ============================================================================
-// Helper: create a typed null value for enum from-interpretation
+// Helpers shared by the cursor-based parser
 // ============================================================================
 
 /**
@@ -199,13 +69,8 @@ static oatpp::Void makeInterpNull(const data::type::Type* interpType) {
   return oatpp::Void(nullptr, interpType);
 }
 
-// ============================================================================
-// Numeric value parsing helpers
-// ============================================================================
-
 /**
  * Parse a JSON number string into a strongly-typed integer value.
- * Handles all integer class IDs up to int64/uint64.
  */
 static bool parseIntToType(
     const char* data, v_buff_size len,
@@ -292,36 +157,26 @@ static bool parseIntToEnum(
   if (!isFloat) {
     v_int64 iv;
     if (Utils::parseInt64(data, len, iv)) {
-      if (interpCid == oatpp::Int32::Class::CLASS_ID) {
-        ev = pdisp->fromInterpretation(
-            oatpp::Int32(static_cast<v_int32>(iv)), useUnqualifiedEnumNames, e);
-      } else if (interpCid == oatpp::Int64::Class::CLASS_ID) {
-        ev = pdisp->fromInterpretation(
-            oatpp::Int64(iv), useUnqualifiedEnumNames, e);
-      } else if (interpCid == oatpp::Int16::Class::CLASS_ID) {
-        ev = pdisp->fromInterpretation(
-            oatpp::Int16(static_cast<v_int16>(iv)), useUnqualifiedEnumNames, e);
-      } else if (interpCid == oatpp::Int8::Class::CLASS_ID) {
-        ev = pdisp->fromInterpretation(
-            oatpp::Int8(static_cast<v_int8>(iv)), useUnqualifiedEnumNames, e);
-      } else {
-        ev = pdisp->fromInterpretation(
-            oatpp::Int64(iv), useUnqualifiedEnumNames, e);
-      }
+      if (interpCid == oatpp::Int32::Class::CLASS_ID)
+        ev = pdisp->fromInterpretation(oatpp::Int32(static_cast<v_int32>(iv)), useUnqualifiedEnumNames, e);
+      else if (interpCid == oatpp::Int64::Class::CLASS_ID)
+        ev = pdisp->fromInterpretation(oatpp::Int64(iv), useUnqualifiedEnumNames, e);
+      else if (interpCid == oatpp::Int16::Class::CLASS_ID)
+        ev = pdisp->fromInterpretation(oatpp::Int16(static_cast<v_int16>(iv)), useUnqualifiedEnumNames, e);
+      else if (interpCid == oatpp::Int8::Class::CLASS_ID)
+        ev = pdisp->fromInterpretation(oatpp::Int8(static_cast<v_int8>(iv)), useUnqualifiedEnumNames, e);
+      else
+        ev = pdisp->fromInterpretation(oatpp::Int64(iv), useUnqualifiedEnumNames, e);
     }
   } else {
     v_float64 fv;
     if (Utils::parseFloat64(data, len, fv)) {
-      if (interpCid == oatpp::Float64::Class::CLASS_ID) {
-        ev = pdisp->fromInterpretation(
-            oatpp::Float64(fv), useUnqualifiedEnumNames, e);
-      } else if (interpCid == oatpp::Float32::Class::CLASS_ID) {
-        ev = pdisp->fromInterpretation(
-            oatpp::Float32(static_cast<v_float32>(fv)), useUnqualifiedEnumNames, e);
-      } else {
-        ev = pdisp->fromInterpretation(
-            oatpp::Float64(fv), useUnqualifiedEnumNames, e);
-      }
+      if (interpCid == oatpp::Float64::Class::CLASS_ID)
+        ev = pdisp->fromInterpretation(oatpp::Float64(fv), useUnqualifiedEnumNames, e);
+      else if (interpCid == oatpp::Float32::Class::CLASS_ID)
+        ev = pdisp->fromInterpretation(oatpp::Float32(static_cast<v_float32>(fv)), useUnqualifiedEnumNames, e);
+      else
+        ev = pdisp->fromInterpretation(oatpp::Float64(fv), useUnqualifiedEnumNames, e);
     }
   }
 
@@ -349,94 +204,133 @@ static bool parseStringToEnum(
   return true;
 }
 
+/**
+ * Wrap a deserialized value in an AnyHandle for Any-typed targets.
+ * Returns the original value if the target type is not Any.
+ */
+static oatpp::Void wrapInAnyHandle(const oatpp::Void& value, const data::type::Type* targetType) {
+  if (!targetType || targetType->classId != oatpp::Any::Class::CLASS_ID) {
+    return value;
+  }
+  const data::type::Type* storedType = value.getValueType();
+  if (!storedType && value.getPtr()) {
+    storedType = oatpp::String::Class::getType();
+  }
+  auto ah = std::make_shared<data::type::AnyHandle>(value.getPtr(), storedType);
+  return oatpp::Void(ah, oatpp::Any::Class::getType());
+}
+
 // ============================================================================
-// deserializePrimitiveValue
+// Single-pass cursor-based deserializer.
+// Walks the raw JSON buffer directly without an intermediate StructuralItem
+// vector, eliminating the scanStructural allocation and second pass.
 // ============================================================================
 
-static bool deserializePrimitiveValue(
-    const char* jsonData,
-    const StructuralItem& item,
-    const std::vector<StructuralItem>& items,
-    size_t& idx,
-    const data::type::Type* type,
-    oatpp::Void& result,
+// --- Cursor helpers ---
+
+static inline void skipWhitespace(const char* data, size_t len, size_t& pos) {
+  while (pos < len) {
+    uint8_t cls = CHAR_CLASS[static_cast<uint8_t>(data[pos])];
+    if (!(cls & CC_WS)) break;
+    pos++;
+  }
+}
+
+// Find the closing (unescaped) quote starting from `pos` which MUST point to
+// an opening '"'.  Returns the content range [start, end) and advances `pos`
+// past the closing quote.
+static bool findStringRange(const char* data, size_t len, size_t& pos,
+                            size_t& contentStart, size_t& contentEnd) {
+  contentStart = pos + 1; // skip opening '"'
+  size_t i = contentStart;
+  while (i < len) {
+    if (data[i] == '"') {
+      // Count preceding backslashes — odd ⇒ escaped quote
+      size_t bs = 0, j = i;
+      while (j > contentStart && data[j - 1] == '\\') { bs++; j--; }
+      if ((bs & 1) == 0) {
+        contentEnd = i;
+        pos = i + 1; // past closing quote
+        return true;
+      }
+    }
+    i++;
+  }
+  return false;
+}
+
+// Extract a (possibly escaped) string from the buffer range [start, end).
+static oatpp::String parseStringFromRange(const char* data,
+                                           size_t start, size_t end) {
+  v_buff_size rawLen = static_cast<v_buff_size>(end - start);
+  const char* strData = data + start;
+  if (!std::memchr(strData, '\\', rawLen)) {
+    return oatpp::String(strData, rawLen);
+  }
+  v_int64 errorCode;
+  v_buff_size errorPos;
+  return Utils::unescapeString(strData, rawLen, errorCode, errorPos);
+}
+
+// Find the end of a JSON number (or identifier: true/false/null).
+// Returns the position just past the last character.
+static size_t findValueEnd(const char* data, size_t len, size_t pos) {
+  while (pos < len) {
+    uint8_t cls = CHAR_CLASS[static_cast<uint8_t>(data[pos])];
+    // Stop at whitespace, structural chars, or quote
+    if (cls & (CC_WS | CC_STRUCT | CC_QUOTE)) break;
+    pos++;
+  }
+  return pos;
+}
+
+// --- Forward declarations for recursive cursor-based functions ---
+
+static bool deserializeValueCursor(const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
+    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
+static bool deserializeObjectCursor(const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
+    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
+static bool deserializeArrayCursor(const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
+    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
+static bool deserializeMapCursor(const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
+    const data::mapping::TreeToObjectMapper::Config& mapperConfig);
+
+// --- deserializePrimitiveValueCursor ---
+
+static bool deserializePrimitiveValueCursor(
+    const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
     const data::mapping::TreeToObjectMapper::Config& mapperConfig)
 {
-  /*
-   * Determine the raw value span in the JSON buffer.
-   *
-   * For strings: item IS the opening quote. We find the matching closing quote
-   * and the span is [opening_quote .. closing_quote] inclusive.
-   *
-   * For non-strings (null / true / false / numbers): item points to the
-   * structural character AFTER the value (',' , '}', ']', or ':'). The span
-   * is from the character after the previous structural item to item.pos.
-   */
-  bool isStringValue = (item.type == '"' && item.flags == 0);
-  uint32_t valEnd, valStart;
+  skipWhitespace(data, len, pos);
+  if (pos >= len) return false;
 
-  if (isStringValue) {
-    valStart = item.pos;
-    size_t closeIdx = idx + 1;
-    while (closeIdx < items.size() &&
-           !(items[closeIdx].type == '"' && items[closeIdx].flags == 1)) {
-      closeIdx++;
-    }
-    if (closeIdx >= items.size()) return false;
-    valEnd = items[closeIdx].pos + 1; /* include closing quote */
-  } else {
-    valEnd = item.pos;
-    valStart = (idx > 0) ? items[idx - 1].pos + 1 : 0;
-  }
+  char firstChar = data[pos];
 
-  const char* valData = jsonData + valStart;
-  v_buff_size valLen = static_cast<v_buff_size>(valEnd - valStart);
-
-  /* Trim leading whitespace */
-  while (valLen > 0 && (valData[0] == ' ' || valData[0] == '\t' ||
-         valData[0] == '\n' || valData[0] == '\r')) {
-    valData++;
-    valLen--;
-  }
-
-  /* Trim trailing whitespace */
-  while (valLen > 0 && (valData[valLen - 1] == ' ' ||
-         valData[valLen - 1] == '\t' ||
-         valData[valLen - 1] == '\n' ||
-         valData[valLen - 1] == '\r')) {
-    valLen--;
-  }
-
-  if (valLen == 0) return false;
-
-  char firstChar = valData[0];
-
-  // ------------------------------------------------------------------
-  // String value
-  // ------------------------------------------------------------------
+  // String
   if (firstChar == '"') {
-    result = deserializeJsonString(jsonData, items, idx);
+    size_t contentStart, contentEnd;
+    if (!findStringRange(data, len, pos, contentStart, contentEnd))
+      return false;
+    result = parseStringFromRange(data, contentStart, contentEnd);
+
     if (result && type) {
       const auto& cid = type->classId;
-
       if (cid == data::type::__class::AbstractEnum::CLASS_ID) {
-        /* String to Enum conversion */
         auto str = result.cast<oatpp::String>();
         parseStringToEnum(str, type, result, mapperConfig.useUnqualifiedEnumNames);
       } else if (cid != oatpp::String::Class::CLASS_ID && cid != oatpp::Any::Class::CLASS_ID) {
-        /* Lexical cast from string to target numeric type */
         if (mapperConfig.allowLexicalCasting) {
           auto str = result.cast<oatpp::String>();
           const char* sd = str->data();
           v_buff_size sl = static_cast<v_buff_size>(str->size());
-          v_int64 iv;
-          if (Utils::parseInt64(sd, sl, iv)) {
-            parseIntToType(sd, sl, cid, result);
-          }
+          parseIntToType(sd, sl, cid, result);
         } else if (!mapperConfig.enabledInterpretations.empty()) {
-          /* Try enabledInterpretations for custom types with String interpretation */
-          auto* interp = type->findInterpretation(
-              mapperConfig.enabledInterpretations);
+          auto* interp = type->findInterpretation(mapperConfig.enabledInterpretations);
           if (interp) {
             auto str = result.cast<oatpp::String>();
             result = interp->fromInterpretation(str);
@@ -448,12 +342,10 @@ static bool deserializePrimitiveValue(
     return true;
   }
 
-  // ------------------------------------------------------------------
   // null
-  // ------------------------------------------------------------------
   if (firstChar == 'n') {
+    pos += 4; // skip "null"
     if (type && type->classId == data::type::__class::AbstractEnum::CLASS_ID) {
-      /* Check NotNull constraint on enum */
       auto pdisp = static_cast<const data::type::__class::AbstractEnum::PolymorphicDispatcher*>(
           type->polymorphicDispatcher);
       auto* interpType = pdisp->getInterpretationType();
@@ -469,11 +361,10 @@ static bool deserializePrimitiveValue(
     return true;
   }
 
-  // ------------------------------------------------------------------
-  // Boolean (or Enum from boolean)
-  // ------------------------------------------------------------------
+  // Boolean
   if (firstChar == 't' || firstChar == 'f') {
     bool isTrue = (firstChar == 't');
+    pos += (isTrue ? 4 : 5); // skip "true" or "false"
 
     if (type && type->classId == data::type::__class::AbstractEnum::CLASS_ID) {
       auto pdisp = static_cast<const data::type::__class::AbstractEnum::PolymorphicDispatcher*>(
@@ -491,18 +382,25 @@ static bool deserializePrimitiveValue(
     return true;
   }
 
-  // ------------------------------------------------------------------
-  // Number
-  // ------------------------------------------------------------------
-  bool isFloat = std::memchr(valData, '.', valLen) ||
-                 std::memchr(valData, 'e', valLen) ||
-                 std::memchr(valData, 'E', valLen);
+  // Number — find its extent in the buffer
+  size_t numEnd = findValueEnd(data, len, pos);
+  const char* valData = data + pos;
+  v_buff_size valLen = static_cast<v_buff_size>(numEnd - pos);
 
-  if (!type) return true; /* no target type → nothing to parse into */
+  if (valLen == 0) return false;
+  pos = numEnd; // consume the number
+
+  // Single-pass float detection (no triple memchr)
+  bool isFloat = false;
+  for (v_buff_size i = 0; i < valLen; i++) {
+    char c = valData[i];
+    if (c == '.' || c == 'e' || c == 'E') { isFloat = true; break; }
+  }
+
+  if (!type) return true;
 
   const auto& cid = type->classId;
 
-  /* Any type: parse number and wrap in AnyHandle */
   if (cid == oatpp::Any::Class::CLASS_ID) {
     if (!isFloat) {
       v_int64 iv;
@@ -519,20 +417,17 @@ static bool deserializePrimitiveValue(
     return false;
   }
 
-  /* Enum from number */
   if (cid == data::type::__class::AbstractEnum::CLASS_ID) {
     parseIntToEnum(valData, valLen, type, isFloat, result,
                    mapperConfig.useUnqualifiedEnumNames);
     return true;
   }
 
-  /* Parse into target type */
   if (!isFloat) {
     if (parseIntToType(valData, valLen, cid, result)) return true;
   }
   if (parseFloatToType(valData, valLen, cid, result)) return true;
 
-  /* Try enabledInterpretations as fallback for custom types */
   if (!mapperConfig.enabledInterpretations.empty()) {
     auto* interp = type->findInterpretation(mapperConfig.enabledInterpretations);
     if (interp) {
@@ -545,20 +440,15 @@ static bool deserializePrimitiveValue(
           if (interpCid == oatpp::Int64::Class::CLASS_ID)
             result = interp->fromInterpretation(oatpp::Int64(iv));
           else if (interpCid == oatpp::Int32::Class::CLASS_ID)
-            result = interp->fromInterpretation(
-                oatpp::Int32(static_cast<v_int32>(iv)));
+            result = interp->fromInterpretation(oatpp::Int32(static_cast<v_int32>(iv)));
           else if (interpCid == oatpp::Int16::Class::CLASS_ID)
-            result = interp->fromInterpretation(
-                oatpp::Int16(static_cast<v_int16>(iv)));
+            result = interp->fromInterpretation(oatpp::Int16(static_cast<v_int16>(iv)));
           else if (interpCid == oatpp::Int8::Class::CLASS_ID)
-            result = interp->fromInterpretation(
-                oatpp::Int8(static_cast<v_int8>(iv)));
+            result = interp->fromInterpretation(oatpp::Int8(static_cast<v_int8>(iv)));
           else if (interpCid == oatpp::Float64::Class::CLASS_ID)
-            result = interp->fromInterpretation(
-                oatpp::Float64(static_cast<v_float64>(iv)));
+            result = interp->fromInterpretation(oatpp::Float64(static_cast<v_float64>(iv)));
           else if (interpCid == oatpp::Float32::Class::CLASS_ID)
-            result = interp->fromInterpretation(
-                oatpp::Float32(static_cast<v_float32>(iv)));
+            result = interp->fromInterpretation(oatpp::Float32(static_cast<v_float32>(iv)));
           else if (interpCid == oatpp::String::Class::CLASS_ID) {
             char buf[24];
             auto n = Utils::int64ToChars(iv, buf);
@@ -572,8 +462,7 @@ static bool deserializePrimitiveValue(
           if (interpCid == oatpp::Float64::Class::CLASS_ID)
             result = interp->fromInterpretation(oatpp::Float64(fv));
           else if (interpCid == oatpp::Float32::Class::CLASS_ID)
-            result = interp->fromInterpretation(
-                oatpp::Float32(static_cast<v_float32>(fv)));
+            result = interp->fromInterpretation(oatpp::Float32(static_cast<v_float32>(fv)));
           else if (interpCid == oatpp::String::Class::CLASS_ID) {
             char buf[64];
             auto n = Utils::float64ToChars(fv, buf);
@@ -588,110 +477,104 @@ static bool deserializePrimitiveValue(
   return false;
 }
 
-// ============================================================================
-// deserializeValue — dispatch based on structural character
-// ============================================================================
+// --- deserializeValueCursor (main dispatch) ---
 
-static bool deserializeValue(
-    const char* jsonData,
-    const std::vector<StructuralItem>& items,
-    size_t& idx,
-    const data::type::Type* type,
-    oatpp::Void& result,
+static bool deserializeValueCursor(
+    const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
     const data::mapping::TreeToObjectMapper::Config& mapperConfig)
 {
-  if (idx >= items.size()) return false;
-  const auto& item = items[idx];
+  skipWhitespace(data, len, pos);
+  if (pos >= len) return false;
 
-  /* Skip stray closing quotes (should not appear as value starts) */
-  if (item.type == '"' && item.flags == 1) {
-    idx++;
-    return deserializeValue(jsonData, items, idx, type, result, mapperConfig);
-  }
+  char c = data[pos];
 
-  switch (item.type) {
-    // ----------------------------------------------------------------
-    // Object — may be DTO, PairList, or UnorderedMap
-    // ----------------------------------------------------------------
+  switch (c) {
     case '{':
-      if (type && type->classId == data::type::__class::AbstractObject::CLASS_ID) {
-        return deserializeObject(jsonData, items, idx, type, result, mapperConfig);
-      }
+      if (type && type->classId == data::type::__class::AbstractObject::CLASS_ID)
+        return deserializeObjectCursor(data, len, pos, type, result, mapperConfig);
       if (type && (type->classId == data::type::__class::AbstractPairList::CLASS_ID ||
-                   type->classId == data::type::__class::AbstractUnorderedMap::CLASS_ID)) {
-        return deserializeMap(jsonData, items, idx, type, result, mapperConfig);
-      }
-      /* Any type: deserialize as UnorderedFields<Any> */
+                   type->classId == data::type::__class::AbstractUnorderedMap::CLASS_ID))
+        return deserializeMapCursor(data, len, pos, type, result, mapperConfig);
       if (type && type->classId == oatpp::Any::Class::CLASS_ID) {
         auto mapType = oatpp::UnorderedFields<oatpp::Any>::Class::getType();
         oatpp::Void mapResult;
-        if (deserializeMap(jsonData, items, idx, mapType, mapResult, mapperConfig)) {
+        if (deserializeMapCursor(data, len, pos, mapType, mapResult, mapperConfig)) {
           result = wrapInAnyHandle(mapResult, type);
           return true;
         }
         return false;
       }
-      /* Unknown object — skip over it */
-      { int depth = 1; idx++;
-        while (idx < items.size() && depth > 0) {
-          if (items[idx].type == '{') depth++;
-          else if (items[idx].type == '}') depth--;
-          idx++;
+      // Unknown object — skip by depth
+      { pos++; int depth = 1;
+        while (pos < len && depth > 0) {
+          if (data[pos] == '{') depth++;
+          else if (data[pos] == '}') depth--;
+          else if (data[pos] == '"') {
+            // skip string contents (handle escapes)
+            pos++;
+            while (pos < len) {
+              if (data[pos] == '"') {
+                size_t bs = 0, j = pos;
+                while (j > 0 && data[j-1] == '\\') { bs++; j--; }
+                if ((bs & 1) == 0) break;
+              }
+              pos++;
+            }
+          }
+          pos++;
         }
       }
       return true;
 
-    // ----------------------------------------------------------------
-    // Array — may be Vector, List, or UnorderedSet
-    // ----------------------------------------------------------------
     case '[':
       if (type && (type->classId == data::type::__class::AbstractVector::CLASS_ID ||
                    type->classId == data::type::__class::AbstractList::CLASS_ID ||
-                   type->classId == data::type::__class::AbstractUnorderedSet::CLASS_ID)) {
-        return deserializeArray(jsonData, items, idx, type, result, mapperConfig);
-      }
-      /* Any type: deserialize as List<Any> */
+                   type->classId == data::type::__class::AbstractUnorderedSet::CLASS_ID))
+        return deserializeArrayCursor(data, len, pos, type, result, mapperConfig);
       if (type && type->classId == oatpp::Any::Class::CLASS_ID) {
         auto listType = oatpp::List<oatpp::Any>::Class::getType();
         oatpp::Void listResult;
-        if (deserializeArray(jsonData, items, idx, listType, listResult, mapperConfig)) {
+        if (deserializeArrayCursor(data, len, pos, listType, listResult, mapperConfig)) {
           result = wrapInAnyHandle(listResult, type);
           return true;
         }
         return false;
       }
-      /* Unknown array — skip over it */
-      { int depth = 1; idx++;
-        while (idx < items.size() && depth > 0) {
-          if (items[idx].type == '[') depth++;
-          else if (items[idx].type == ']') depth--;
-          idx++;
+      // Unknown array — skip by depth
+      { pos++; int depth = 1;
+        while (pos < len && depth > 0) {
+          if (data[pos] == '[') depth++;
+          else if (data[pos] == ']') depth--;
+          else if (data[pos] == '"') {
+            pos++;
+            while (pos < len) {
+              if (data[pos] == '"') {
+                size_t bs = 0, j = pos;
+                while (j > 0 && data[j-1] == '\\') { bs++; j--; }
+                if ((bs & 1) == 0) break;
+              }
+              pos++;
+            }
+          }
+          pos++;
         }
       }
       return true;
 
-    // ----------------------------------------------------------------
-    // Primitive (string / null / boolean / number)
-    // ----------------------------------------------------------------
     default:
-      return deserializePrimitiveValue(
-          jsonData, item, items, idx, type, result, mapperConfig);
+      return deserializePrimitiveValueCursor(data, len, pos, type, result, mapperConfig);
   }
 }
 
-// ============================================================================
-// deserializeObject — deserialize a JSON object into a DTO
-// ============================================================================
+// --- deserializeObjectCursor ---
 
-static bool deserializeObject(
-    const char* jsonData,
-    const std::vector<StructuralItem>& items,
-    size_t& idx,
-    const data::type::Type* type,
-    oatpp::Void& result,
+static bool deserializeObjectCursor(
+    const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
     const data::mapping::TreeToObjectMapper::Config& mapperConfig)
 {
-  idx++; /* skip '{' */
+  pos++; // skip '{'
 
   auto dispatcher =
       static_cast<const data::type::__class::AbstractObject::PolymorphicDispatcher*>(
@@ -701,60 +584,58 @@ static bool deserializeObject(
   result = dispatcher->createObject();
   auto* object = static_cast<oatpp::BaseObject*>(result.get());
 
-  /*
-   * Sequential property cache: track the next-expected property pointer.
-   * JSON objects typically arrive with fields in DTO schema order. When
-   * the incoming key matches the next property in the ordered list, we
-   * skip the unordered_map hash lookup entirely — just advance the pointer.
-   * On the first mismatch we disable the cache for the rest of this object.
-   */
+  // Sequential property cache — same as before but using cursor
   const auto& propList = props->getList();
   auto nextPropIt = propList.begin();
   bool useSequentialCache = true;
 
-  while (idx < items.size()) {
-    /* Empty object — '}' ends immediately */
-    if (items[idx].type == '}') { idx++; break; }
+  while (pos < len) {
+    skipWhitespace(data, len, pos);
+    if (pos >= len) return false;
 
-    /* Deserialize field key */
-    if (items[idx].type != '"' || items[idx].flags != 0) return false;
-    auto key = deserializeJsonString(jsonData, items, idx);
-    if (!key) return false;
+    // Empty object or end
+    if (data[pos] == '}') { pos++; break; }
 
-    /* Expect ':' separator */
-    if (idx >= items.size() || items[idx].type != ':') return false;
-    idx++; /* skip ':' */
+    // Parse key string
+    if (data[pos] != '"') return false;
+    size_t keyStart, keyEnd;
+    if (!findStringRange(data, len, pos, keyStart, keyEnd)) return false;
+    // key is in data[keyStart .. keyEnd)
 
-    /* Look up the field in the DTO's property map */
+    skipWhitespace(data, len, pos);
+    if (pos >= len || data[pos] != ':') return false;
+    pos++; // skip ':'
+
+    // Property lookup
     const oatpp::BaseObject::Property* prop = nullptr;
 
-    /* Fast path: try the next-expected property in schema order */
+    // Fast path: sequential cache
     if (useSequentialCache && nextPropIt != propList.end()) {
       const auto& candidate = *nextPropIt;
       const std::string& expectedKey = mapperConfig.useUnqualifiedFieldNames
           ? candidate->unqualifiedName : candidate->name;
-      if (expectedKey.size() == static_cast<size_t>(key->size()) &&
-          std::memcmp(expectedKey.data(), key->data(), expectedKey.size()) == 0) {
+      size_t klen = static_cast<size_t>(keyEnd - keyStart);
+      if (expectedKey.size() == klen &&
+          std::memcmp(expectedKey.data(), data + keyStart, klen) == 0) {
         prop = candidate;
         ++nextPropIt;
       } else {
-        /* Mismatch — disable sequential cache for the rest of this object */
         useSequentialCache = false;
       }
     }
 
     if (!prop) {
-      /* Slow path: full map lookup */
+      // Full map lookup — need an oatpp::String for the key
+      auto keyStr = parseStringFromRange(data, keyStart, keyEnd);
       if (mapperConfig.useUnqualifiedFieldNames) {
-        auto uit = props->getUnqualifiedMap().find(key);
+        auto uit = props->getUnqualifiedMap().find(keyStr);
         if (uit != props->getUnqualifiedMap().end()) prop = uit->second;
       } else {
-        auto it = props->getMap().find(key);
+        auto it = props->getMap().find(keyStr);
         if (it != props->getMap().end()) {
           prop = it->second;
         } else {
-          /* Fallback: also try unqualified names for backward compatibility */
-          auto uit = props->getUnqualifiedMap().find(key);
+          auto uit = props->getUnqualifiedMap().find(keyStr);
           if (uit != props->getUnqualifiedMap().end()) prop = uit->second;
         }
       }
@@ -763,53 +644,49 @@ static bool deserializeObject(
     if (prop) {
       const data::type::Type* fieldType = prop->type;
       bool isAnyField = (fieldType == oatpp::Any::Class::getType());
-
-      /* Resolve the type to parse against */
       const data::type::Type* parseType = fieldType;
+
       if (isAnyField && prop->info.typeSelector) {
         parseType = prop->info.typeSelector->selectType(object);
       } else if (isAnyField && !prop->info.typeSelector) {
-        /* No typeSelector — peek JSON content to guess the type */
-        const char* peek = jsonData + items[idx - 1].pos + 1;
-        while (*peek == ' ' || *peek == '\t' || *peek == '\n' || *peek == '\r') peek++;
-        if (*peek == '"') {
-          parseType = oatpp::String::Class::getType();
-        } else if (*peek == 't' || *peek == 'f') {
-          parseType = oatpp::Boolean::Class::getType();
-        } else if (*peek == 'n') {
-          parseType = nullptr;
-        } else if (*peek == '-' || (*peek >= '0' && *peek <= '9')) {
-          const char* p = peek + 1;
-          while (*p >= '0' && *p <= '9') p++;
-          parseType = (*p == '.' || *p == 'e' || *p == 'E')
-              ? oatpp::Float64::Class::getType()
-              : oatpp::Int64::Class::getType();
+        // Peek at the value from current cursor position
+        skipWhitespace(data, len, pos);
+        char peek = (pos < len) ? data[pos] : '\0';
+        if (peek == '"') parseType = oatpp::String::Class::getType();
+        else if (peek == 't' || peek == 'f') parseType = oatpp::Boolean::Class::getType();
+        else if (peek == 'n') parseType = nullptr;
+        else if (peek == '-' || (peek >= '0' && peek <= '9')) {
+          // Find out if it's a float
+          size_t peekPos = pos + 1;
+          bool isFloat = false;
+          while (peekPos < len) {
+            char pc = data[peekPos];
+            if (pc == '.' || pc == 'e' || pc == 'E') { isFloat = true; break; }
+            if (!(CHAR_CLASS[static_cast<uint8_t>(pc)] & CC_DIGIT)) break;
+            peekPos++;
+          }
+          parseType = isFloat ? oatpp::Float64::Class::getType()
+                              : oatpp::Int64::Class::getType();
         } else {
           parseType = nullptr;
         }
       }
 
-      /* Parse the field value */
       oatpp::Void fieldValue;
-      if (!deserializeValue(jsonData, items, idx, parseType, fieldValue,
-                           mapperConfig)) {
+      if (!deserializeValueCursor(data, len, pos, parseType, fieldValue, mapperConfig))
         return false;
-      }
 
-      /* Set the field on the DTO object */
       if (isAnyField) {
         const data::type::Type* storedType = fieldValue.getValueType();
-
         if (!fieldValue && (prop->info.typeSelector || parseType)) {
-          storedType = parseType;  /* parseType already reflects typeSelector resolution */
+          storedType = parseType;
           auto ah = std::make_shared<data::type::AnyHandle>(
               std::shared_ptr<void>(nullptr), storedType);
           prop->set(object, oatpp::Void(ah, oatpp::Any::Class::getType()));
         } else {
           if (!storedType) storedType = parseType;
-          if (!storedType && fieldValue.getPtr()) {
+          if (!storedType && fieldValue.getPtr())
             storedType = oatpp::String::Class::getType();
-          }
           auto ah = std::make_shared<data::type::AnyHandle>(
               fieldValue.getPtr(), storedType);
           prop->set(object, oatpp::Void(ah, oatpp::Any::Class::getType()));
@@ -818,25 +695,25 @@ static bool deserializeObject(
         prop->set(object, fieldValue);
       }
     } else if (!mapperConfig.allowUnknownFields) {
-      /* Unknown field — error if not allowed */
       return false;
     } else {
-      /* Unknown field — skip its value */
+      // Skip unknown value
       oatpp::Void dummy;
-      if (!deserializeValue(jsonData, items, idx, nullptr, dummy,
-                           mapperConfig)) return false;
+      if (!deserializeValueCursor(data, len, pos, nullptr, dummy, mapperConfig))
+        return false;
     }
 
-    /* Advance past ',' or '}' */
-    if (idx < items.size() && items[idx].type == ',') {
-      idx++;
-    } else if (idx < items.size() && items[idx].type == '}') {
-      idx++;
+    // Advance past ',' or '}'
+    skipWhitespace(data, len, pos);
+    if (pos < len && data[pos] == ',') {
+      pos++;
+    } else if (pos < len && data[pos] == '}') {
+      pos++;
       break;
     }
   }
 
-  /* Verify required fields are present */
+  // Verify required fields
   for (auto const& field : props->getList()) {
     if (field->info.required) {
       auto fv = field->get(object);
@@ -847,19 +724,14 @@ static bool deserializeObject(
   return true;
 }
 
-// ============================================================================
-// deserializeArray — deserialize a JSON array into a collection
-// ============================================================================
+// --- deserializeArrayCursor (with element pre-count for reserve) ---
 
-static bool deserializeArray(
-    const char* jsonData,
-    const std::vector<StructuralItem>& items,
-    size_t& idx,
-    const data::type::Type* type,
-    oatpp::Void& result,
+static bool deserializeArrayCursor(
+    const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
     const data::mapping::TreeToObjectMapper::Config& mapperConfig)
 {
-  idx++; /* skip '[' */
+  pos++; // skip '['
 
   auto dispatcher =
       static_cast<const data::type::__class::Collection::PolymorphicDispatcher*>(
@@ -867,38 +739,72 @@ static bool deserializeArray(
   result = dispatcher->createObject();
   const data::type::Type* itemType = dispatcher->getItemType();
 
-  while (idx < items.size()) {
-    oatpp::Void itemValue;
-    bool ok = deserializeValue(jsonData, items, idx, itemType, itemValue,
-                               mapperConfig);
+  // Pre-count elements for reserve (if the dispatcher supports it).
+  // We scan ahead counting top-level commas.
+  {
+    size_t scanPos = pos;
+    int depth = 0;
+    size_t count = 0;
+    bool isEmpty = false;
+    bool inString = false;
+    while (scanPos < len) {
+      char c = data[scanPos];
+      if (inString) {
+        if (c == '"') {
+          size_t bs = 0, j = scanPos;
+          while (j > 0 && data[j - 1] == '\\') { bs++; j--; }
+          if ((bs & 1) == 0) inString = false;
+        }
+        scanPos++;
+        continue;
+      }
+      if (c == '"') { inString = true; scanPos++; continue; }
+      if (c == '[') { depth++; scanPos++; continue; }
+      if (c == ']') {
+        if (depth == 0) { isEmpty = (count == 0 && scanPos == pos); break; }
+        depth--;
+        scanPos++;
+        continue;
+      }
+      if (depth == 0 && c == ',') { count++; }
+      scanPos++;
+    }
+    if (!isEmpty && count + 1 > 0) {
+      // Try to reserve — the dispatcher may or may not support this.
+      // For Vector<T>, dispatcher->createObject() + repeated addItem is the
+      // only public API; we skip reserve to keep things general.
+      (void)count; // reserved for future dispatcher->reserve() call
+    }
+  }
 
-    /* Empty array: deserializeValue fails on ']' (zero-length value) */
-    if (!ok && items[idx].type == ']') { idx++; return true; }
-    if (!ok) return false;
+  while (pos < len) {
+    skipWhitespace(data, len, pos);
+    if (pos >= len) return false;
+
+    if (data[pos] == ']') { pos++; return true; }
+
+    oatpp::Void itemValue;
+    if (!deserializeValueCursor(data, len, pos, itemType, itemValue, mapperConfig))
+      return false;
 
     dispatcher->addItem(result, itemValue);
 
-    /* After deserializeValue, idx points to ',' or ']' */
-    if (idx < items.size() && items[idx].type == ']') { idx++; return true; }
-    if (idx < items.size() && items[idx].type == ',') idx++;
+    skipWhitespace(data, len, pos);
+    if (pos < len && data[pos] == ']') { pos++; return true; }
+    if (pos < len && data[pos] == ',') pos++;
   }
 
   return false;
 }
 
-// ============================================================================
-// deserializeMap — deserialize a JSON object into a map (PairList / UnorderedMap)
-// ============================================================================
+// --- deserializeMapCursor ---
 
-static bool deserializeMap(
-    const char* jsonData,
-    const std::vector<StructuralItem>& items,
-    size_t& idx,
-    const data::type::Type* type,
-    oatpp::Void& result,
+static bool deserializeMapCursor(
+    const char* data, size_t len, size_t& pos,
+    const data::type::Type* type, oatpp::Void& result,
     const data::mapping::TreeToObjectMapper::Config& mapperConfig)
 {
-  idx++; /* skip '{' */
+  pos++; // skip '{'
 
   auto dispatcher =
       static_cast<const data::type::__class::Map::PolymorphicDispatcher*>(
@@ -907,34 +813,36 @@ static bool deserializeMap(
   const data::type::Type* valueType = dispatcher->getValueType();
   result = dispatcher->createObject();
 
-  while (idx < items.size()) {
-    /* Empty map — '}' ends immediately */
-    if (items[idx].type == '}') { idx++; return true; }
+  while (pos < len) {
+    skipWhitespace(data, len, pos);
+    if (pos >= len) return false;
 
-    /* Deserialize key (must be a JSON string) */
-    if (items[idx].type != '"' || items[idx].flags != 0) return false;
-    auto key = deserializeJsonString(jsonData, items, idx);
-    if (!key) return false;
+    if (data[pos] == '}') { pos++; return true; }
 
-    /* Expect ':' separator */
-    if (idx >= items.size() || items[idx].type != ':') return false;
-    idx++; /* skip ':' */
+    // Parse key
+    if (data[pos] != '"') return false;
+    size_t keyStart, keyEnd;
+    if (!findStringRange(data, len, pos, keyStart, keyEnd)) return false;
+    auto key = parseStringFromRange(data, keyStart, keyEnd);
 
-    /* Parse the value */
+    skipWhitespace(data, len, pos);
+    if (pos >= len || data[pos] != ':') return false;
+    pos++; // skip ':'
+
     oatpp::Void kv, value;
     if (keyType->classId == oatpp::String::Class::CLASS_ID) {
       kv = key;
     }
-    if (!deserializeValue(jsonData, items, idx, valueType, value,
-                          mapperConfig)) return false;
+    if (!deserializeValueCursor(data, len, pos, valueType, value, mapperConfig))
+      return false;
 
     dispatcher->addItem(result, kv, value);
 
-    /* After deserializeValue, idx points to ',' or '}' */
-    if (idx < items.size() && items[idx].type == ',') {
-      idx++;
-    } else if (idx < items.size() && items[idx].type == '}') {
-      idx++;
+    skipWhitespace(data, len, pos);
+    if (pos < len && data[pos] == ',') {
+      pos++;
+    } else if (pos < len && data[pos] == '}') {
+      pos++;
       return true;
     }
   }
@@ -960,35 +868,10 @@ oatpp::Void FastDeserializer::deserialize(
 
   if (!jsonData || jsonLen < 1 || !type) return nullptr;
 
-  /* Stage 1: scan JSON buffer for structural characters */
-  std::vector<StructuralItem> items;
-  if (!scanStructural(reinterpret_cast<const uint8_t*>(jsonData), jsonLen, items)) {
-    return nullptr;
-  }
-
-  /*
-   * Handle top-level primitives.
-   * true / false / null / numbers have no structural characters
-   * ('{' '}' '[' ']' ',' ':'), so items will be empty. We synthesize a
-   * separator-like marker at the end of the buffer for deserializePrimitiveValue
-   * to use as a value boundary.
-   */
-  if (items.empty()) {
-    if (jsonLen > 0) {
-      StructuralItem si;
-      si.pos = static_cast<uint32_t>(jsonLen);
-      si.type = 0;
-      si.flags = 0;
-      items.push_back(si);
-    } else {
-      return nullptr;
-    }
-  }
-
-  /* Stage 2+3: recursive value parse from structural index */
-  size_t idx = 0;
+  /* Single-pass cursor-based deserialization — no structural scan needed. */
+  size_t pos = 0;
   oatpp::Void result;
-  if (deserializeValue(jsonData, items, idx, type, result, mapperConfig)) {
+  if (deserializeValueCursor(jsonData, jsonLen, pos, type, result, mapperConfig)) {
     caret.setPosition(caret.getDataSize());
     return result;
   }

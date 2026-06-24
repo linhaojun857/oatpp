@@ -417,15 +417,25 @@ static bool serializeObject(
     }
     first = false;
 
-    /* Serialize field key */
+    /* Serialize field key.
+     * DTO field names are compile-time constants — always simple ASCII with
+     * no characters needing JSON escaping.  Pre-format '"key":' into a
+     * stack buffer for a single bulk write, avoiding the isSimpleString
+     * scan and per-character virtual dispatch. */
     const std::string& key = useUnqualifiedFieldNames
         ? field->unqualifiedName : field->name;
-    serializeJsonString(stream, key.data(),
-        static_cast<v_buff_size>(key.size()), jsonConfig.escapeFlags);
-    stream->writeCharSimple(':');
+    v_buff_size keySize = static_cast<v_buff_size>(key.size());
+    // Stack buffer: opening '"' + key + closing '"' + ':' + optional ' '
+    char keyBuf[256];
+    keyBuf[0] = '"';
+    std::memcpy(keyBuf + 1, key.data(), static_cast<size_t>(keySize));
+    keyBuf[1 + keySize] = '"';
+    keyBuf[2 + keySize] = ':';
+    v_buff_size prefixLen = 3 + keySize;
     if (jsonConfig.useBeautifier) {
-      stream->writeCharSimple(' ');
+      keyBuf[prefixLen++] = ' ';
     }
+    stream->writeSimple(keyBuf, prefixLen);
 
     /* Serialize value recursively.
      * If the field is non-null, tell serializeImpl to skip its own
