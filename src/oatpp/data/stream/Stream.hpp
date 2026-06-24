@@ -244,10 +244,12 @@ public:
 
   /**
    * Same as `write(&c, 1);`.
+   * May be overridden by buffer streams for direct single-byte assignment
+   * without memcpy overhead.
    * @param c - one char to write.
    * @return - actual number of bytes written. &id:oatpp::v_io_size;.
    */
-  v_io_size writeCharSimple(v_char8 c){
+  virtual v_io_size writeCharSimple(v_char8 c){
     return writeSimple(&c, 1);
   }
 

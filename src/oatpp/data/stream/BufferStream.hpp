@@ -68,6 +68,15 @@ public:
   v_io_size write(const void *data, v_buff_size count, async::Action& action) override;
 
   /**
+   * Write one char directly to the internal buffer.
+   * Overrides the base-class implementation to avoid memcpy(1) and
+   * async::Action overhead — uses direct assignment: m_data[m_position++] = c.
+   * @param c - one char to write.
+   * @return - actual number of bytes written (always 1).
+   */
+  v_io_size writeCharSimple(v_char8 c) override;
+
+  /**
    * Set stream I/O mode.
    * @throws
    */

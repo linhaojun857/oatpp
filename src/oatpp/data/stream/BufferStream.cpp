@@ -60,6 +60,12 @@ v_io_size BufferOutputStream::write(const void *data, v_buff_size count, async::
 
 }
 
+v_io_size BufferOutputStream::writeCharSimple(v_char8 c) {
+  reserveBytesUpfront(1);
+  m_data[m_position++] = c;
+  return 1;
+}
+
 void BufferOutputStream::setOutputStreamIOMode(IOMode ioMode) {
   m_ioMode = ioMode;
 }

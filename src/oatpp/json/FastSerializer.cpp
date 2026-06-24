@@ -112,24 +112,42 @@ static void serializeJsonString(
 // Null-value detection
 // ============================================================================
 
+// Lookup table for fast null-value detection.
+// ClassId.id is a dense integer (0..N-1); this table maps each primitive
+// type's class-id to true so we can avoid a chain of cast<> comparisons.
+// Initialized lazily on first call.
+static bool isPrimitiveTypeId(v_int32 id) {
+  static bool initialized = false;
+  static bool table[64] = {false}; // large enough for all oatpp built-in types
+
+  if (!initialized) {
+    table[oatpp::Boolean::Class::CLASS_ID.id] = true;
+    table[oatpp::Int8::Class::CLASS_ID.id]    = true;
+    table[oatpp::UInt8::Class::CLASS_ID.id]   = true;
+    table[oatpp::Int16::Class::CLASS_ID.id]   = true;
+    table[oatpp::UInt16::Class::CLASS_ID.id]  = true;
+    table[oatpp::Int32::Class::CLASS_ID.id]   = true;
+    table[oatpp::UInt32::Class::CLASS_ID.id]  = true;
+    table[oatpp::Int64::Class::CLASS_ID.id]   = true;
+    table[oatpp::UInt64::Class::CLASS_ID.id]  = true;
+    table[oatpp::Float32::Class::CLASS_ID.id] = true;
+    table[oatpp::Float64::Class::CLASS_ID.id] = true;
+    table[oatpp::String::Class::CLASS_ID.id]  = true;
+    initialized = true;
+  }
+
+  return (id >= 0 && id < 64) && table[id];
+}
+
 static bool isNullData(const oatpp::Void& value, const data::type::Type* type) {
   if (!value) return true;
 
-  const auto& cid = type->classId;
-
-  if (cid == oatpp::Boolean::Class::CLASS_ID)  return !value.cast<oatpp::Boolean>().getPtr();
-  if (cid == oatpp::Int8::Class::CLASS_ID)     return !value.cast<oatpp::Int8>();
-  if (cid == oatpp::UInt8::Class::CLASS_ID)    return !value.cast<oatpp::UInt8>();
-  if (cid == oatpp::Int16::Class::CLASS_ID)    return !value.cast<oatpp::Int16>();
-  if (cid == oatpp::UInt16::Class::CLASS_ID)   return !value.cast<oatpp::UInt16>();
-  if (cid == oatpp::Int32::Class::CLASS_ID)    return !value.cast<oatpp::Int32>();
-  if (cid == oatpp::UInt32::Class::CLASS_ID)   return !value.cast<oatpp::UInt32>();
-  if (cid == oatpp::Int64::Class::CLASS_ID)    return !value.cast<oatpp::Int64>();
-  if (cid == oatpp::UInt64::Class::CLASS_ID)   return !value.cast<oatpp::UInt64>();
-  if (cid == oatpp::Float32::Class::CLASS_ID)  return !value.cast<oatpp::Float32>();
-  if (cid == oatpp::Float64::Class::CLASS_ID)  return !value.cast<oatpp::Float64>();
-  if (cid == oatpp::String::Class::CLASS_ID)   return !value.cast<oatpp::String>();
-
+  // For primitive types, a null shared_ptr means null data.
+  // For non-primitive types (DTOs, collections), a non-null Void is never
+  // considered null data — they are simply empty structures.
+  if (isPrimitiveTypeId(type->classId.id)) {
+    return !value.getPtr();
+  }
   return false;
 }
 
@@ -328,7 +346,8 @@ static bool serializeImpl(
     data::mapping::ErrorStack& errorStack,
     const data::mapping::ObjectToTreeMapper::Config& mapperConfig,
     const Serializer::Config& jsonConfig,
-    v_int32 indent);
+    v_int32 indent,
+    bool skipNullCheck = false);
 
 // ============================================================================
 // DTO Object serialization
@@ -368,8 +387,11 @@ static bool serializeObject(
       fv = field->get(object);
     }
 
+    /* Evaluate null-ness once — used by both required-check and null-skip */
+    bool fieldIsNull = isNullData(fv, fv.getValueType());
+
     /* Required-field null check */
-    if (field->info.required && isNullData(fv, fv.getValueType())) {
+    if (field->info.required && fieldIsNull) {
       if (!mapperConfig.alwaysIncludeRequired) {
         const std::string& key = useUnqualifiedFieldNames
             ? field->unqualifiedName : field->name;
@@ -381,7 +403,7 @@ static bool serializeObject(
     }
 
     /* Skip null fields if configured to do so */
-    if (isNullData(fv, fv.getValueType())) {
+    if (fieldIsNull) {
       bool includeForRequired =
           field->info.required && mapperConfig.alwaysIncludeRequired;
       if (!includeNullFields && !jsonConfig.includeNullElements && !includeForRequired)
@@ -405,9 +427,11 @@ static bool serializeObject(
       stream->writeCharSimple(' ');
     }
 
-    /* Serialize value recursively */
+    /* Serialize value recursively.
+     * If the field is non-null, tell serializeImpl to skip its own
+     * redundant null check — we already verified it here. */
     if (!serializeImpl(stream, fv, errorStack,
-            mapperConfig, jsonConfig, childIndent)) {
+            mapperConfig, jsonConfig, childIndent, !fieldIsNull)) {
       return false;
     }
   }
@@ -458,7 +482,7 @@ static bool serializeCollection(
     first = false;
 
     if (!serializeImpl(stream, item, errorStack,
-            mapperConfig, jsonConfig, childIndent)) {
+            mapperConfig, jsonConfig, childIndent, static_cast<bool>(item))) {
       return false;
     }
 
@@ -527,7 +551,7 @@ static bool serializeMap(
 
     /* Serialize map value */
     if (!serializeImpl(stream, val, errorStack,
-            mapperConfig, jsonConfig, childIndent)) {
+            mapperConfig, jsonConfig, childIndent, static_cast<bool>(val))) {
       return false;
     }
 
@@ -549,7 +573,8 @@ static bool serializeImpl(
     data::mapping::ErrorStack& errorStack,
     const data::mapping::ObjectToTreeMapper::Config& mapperConfig,
     const Serializer::Config& jsonConfig,
-    v_int32 indent)
+    v_int32 indent,
+    bool skipNullCheck)
 {
   const auto* type = variant.getValueType();
   const std::vector<std::string>* enabledInterpretations =
@@ -565,30 +590,33 @@ static bool serializeImpl(
   }
 
   // ------------------------------------------------------------------
-  // Null check for value types
+  // Null check for value types.
+  // Callers that have already verified the value is non-null (e.g.
+  // serializeObject after its isNullData checks) can pass skipNullCheck=true
+  // to avoid the redundant check here.
   // ------------------------------------------------------------------
-  if (!variant || isNullData(variant, type)) {
-    stream->writeSimple("null", 4);
-    return true;
+  if (!skipNullCheck) {
+    if (!variant || isNullData(variant, type)) {
+      stream->writeSimple("null", 4);
+      return true;
+    }
   }
 
   // ------------------------------------------------------------------
-  // Signed integers
+  // Type dispatch ordered by frequency of occurrence in typical DTOs:
+  // String > Int32 > Int64 > Float64 > Boolean > other primitives >
+  // Any > Collections > Object > Maps
   // ------------------------------------------------------------------
-  if (cid == oatpp::Int8::Class::CLASS_ID) {
-    auto v = variant.cast<oatpp::Int8>();
-    char buf[8];
-    auto n = Utils::int64ToChars(*v, buf);
-    stream->writeSimple(buf, n);
+
+  // --- String (most common) ---
+  if (cid == oatpp::String::Class::CLASS_ID) {
+    const auto& s = variant.cast<oatpp::String>();
+    serializeJsonString(stream, s->data(),
+        static_cast<v_buff_size>(s->size()), jsonConfig.escapeFlags);
     return true;
   }
-  if (cid == oatpp::Int16::Class::CLASS_ID) {
-    auto v = variant.cast<oatpp::Int16>();
-    char buf[8];
-    auto n = Utils::int64ToChars(*v, buf);
-    stream->writeSimple(buf, n);
-    return true;
-  }
+
+  // --- Common integers ---
   if (cid == oatpp::Int32::Class::CLASS_ID) {
     auto v = variant.cast<oatpp::Int32>();
     char buf[16];
@@ -604,9 +632,39 @@ static bool serializeImpl(
     return true;
   }
 
-  // ------------------------------------------------------------------
-  // Unsigned integers
-  // ------------------------------------------------------------------
+  // --- Float64 (common for numeric fields) ---
+  if (cid == oatpp::Float64::Class::CLASS_ID) {
+    auto v = variant.cast<oatpp::Float64>();
+    char buf[64];
+    auto n = Utils::float64ToChars(*v, buf);
+    stream->writeSimple(buf, n);
+    return true;
+  }
+
+  // --- Boolean ---
+  if (cid == oatpp::Boolean::Class::CLASS_ID) {
+    auto v = variant.cast<oatpp::Boolean>();
+    stream->writeSimple(*v ? "true" : "false", *v ? 4 : 5);
+    return true;
+  }
+
+  // --- Less common signed integers ---
+  if (cid == oatpp::Int8::Class::CLASS_ID) {
+    auto v = variant.cast<oatpp::Int8>();
+    char buf[8];
+    auto n = Utils::int64ToChars(*v, buf);
+    stream->writeSimple(buf, n);
+    return true;
+  }
+  if (cid == oatpp::Int16::Class::CLASS_ID) {
+    auto v = variant.cast<oatpp::Int16>();
+    char buf[8];
+    auto n = Utils::int64ToChars(*v, buf);
+    stream->writeSimple(buf, n);
+    return true;
+  }
+
+  // --- Less common unsigned integers ---
   if (cid == oatpp::UInt8::Class::CLASS_ID) {
     auto v = variant.cast<oatpp::UInt8>();
     char buf[8];
@@ -636,9 +694,7 @@ static bool serializeImpl(
     return true;
   }
 
-  // ------------------------------------------------------------------
-  // Floating point
-  // ------------------------------------------------------------------
+  // --- Float32 (less common) ---
   if (cid == oatpp::Float32::Class::CLASS_ID) {
     auto v = variant.cast<oatpp::Float32>();
     char buf[64];
@@ -646,53 +702,15 @@ static bool serializeImpl(
     stream->writeSimple(buf, n);
     return true;
   }
-  if (cid == oatpp::Float64::Class::CLASS_ID) {
-    auto v = variant.cast<oatpp::Float64>();
-    char buf[64];
-    auto n = Utils::float64ToChars(*v, buf);
-    stream->writeSimple(buf, n);
-    return true;
-  }
 
-  // ------------------------------------------------------------------
-  // Boolean
-  // ------------------------------------------------------------------
-  if (cid == oatpp::Boolean::Class::CLASS_ID) {
-    auto v = variant.cast<oatpp::Boolean>();
-    stream->writeSimple(*v ? "true" : "false", *v ? 4 : 5);
-    return true;
-  }
-
-  // ------------------------------------------------------------------
-  // String
-  // ------------------------------------------------------------------
-  if (cid == oatpp::String::Class::CLASS_ID) {
-    const auto& s = variant.cast<oatpp::String>();
-    serializeJsonString(stream, s->data(),
-        static_cast<v_buff_size>(s->size()), jsonConfig.escapeFlags);
-    return true;
-  }
-
-  // ------------------------------------------------------------------
-  // Any (unwrap and recurse)
-  // ------------------------------------------------------------------
+  // --- Any (unwrap and recurse) ---
   if (cid == oatpp::Any::Class::CLASS_ID) {
     auto ah = static_cast<data::type::AnyHandle*>(variant.get());
     return serializeImpl(stream, oatpp::Void(ah->ptr, ah->type), errorStack,
         mapperConfig, jsonConfig, indent);
   }
 
-  // ------------------------------------------------------------------
-  // DTO Object
-  // ------------------------------------------------------------------
-  if (cid == data::type::__class::AbstractObject::CLASS_ID) {
-    return serializeObject(stream, variant, type, mapperConfig, jsonConfig,
-        errorStack, indent);
-  }
-
-  // ------------------------------------------------------------------
-  // Collections: Vector / List / UnorderedSet
-  // ------------------------------------------------------------------
+  // --- Collections: Vector / List / UnorderedSet (before Object — more specific) ---
   if (cid == data::type::__class::AbstractVector::CLASS_ID ||
       cid == data::type::__class::AbstractList::CLASS_ID ||
       cid == data::type::__class::AbstractUnorderedSet::CLASS_ID) {
@@ -700,9 +718,13 @@ static bool serializeImpl(
         errorStack, indent);
   }
 
-  // ------------------------------------------------------------------
-  // Maps: PairList / UnorderedMap
-  // ------------------------------------------------------------------
+  // --- DTO Object ---
+  if (cid == data::type::__class::AbstractObject::CLASS_ID) {
+    return serializeObject(stream, variant, type, mapperConfig, jsonConfig,
+        errorStack, indent);
+  }
+
+  // --- Maps: PairList / UnorderedMap ---
   if (cid == data::type::__class::AbstractPairList::CLASS_ID ||
       cid == data::type::__class::AbstractUnorderedMap::CLASS_ID) {
     return serializeMap(stream, variant, type, mapperConfig, jsonConfig,

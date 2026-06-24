@@ -81,12 +81,42 @@ const uint8_t CHAR_CLASS[256] = {
 // Fast string classification
 // ============================================================================
 
+// Detect bytes that need JSON escaping within an 8-byte word.
+// Returns non-zero if any byte is 0x00-0x1F (control), 0x22 ('"'), or 0x5C ('\\').
+static inline uint64_t hasEscapeBytesInWord(uint64_t word) {
+  // Control chars (0x00-0x1F): (word - 0x20) sets bit 7 for bytes < 0x20
+  uint64_t ctrl = ((word - 0x2020202020202020ULL) & ~word) & 0x8080808080808080ULL;
+  // Byte == 0x22 ('"')
+  uint64_t x = word ^ 0x2222222222222222ULL;
+  uint64_t quote = ((x - 0x0101010101010101ULL) & ~x) & 0x8080808080808080ULL;
+  // Byte == 0x5C ('\\')
+  x = word ^ 0x5C5C5C5C5C5C5C5CULL;
+  uint64_t backslash = ((x - 0x0101010101010101ULL) & ~x) & 0x8080808080808080ULL;
+  return ctrl | quote | backslash;
+}
+
 bool Utils::isSimpleString(const char* data, v_buff_size size) {
-  for (v_buff_size i = 0; i < size; i++) {
-    uint8_t cls = CHAR_CLASS[static_cast<uint8_t>(data[i])];
-    if (cls & (CC_ESCAPE | CC_CONTROL)) {
-      return false;
+  v_buff_size i = 0;
+
+  // Process 8 bytes at a time using word-level bitwise checks
+  while (i + 8 <= size) {
+    uint64_t word;
+    std::memcpy(&word, data + i, 8);
+    if (hasEscapeBytesInWord(word)) {
+      // One or more bytes in this word need escaping — fall back to
+      // byte-at-a-time scan to find the exact culprit
+      for (int j = 0; j < 8; j++) {
+        uint8_t cls = CHAR_CLASS[static_cast<uint8_t>(data[i + j])];
+        if (cls & (CC_ESCAPE | CC_CONTROL)) return false;
+      }
     }
+    i += 8;
+  }
+
+  // Process remaining bytes
+  for (; i < size; i++) {
+    uint8_t cls = CHAR_CLASS[static_cast<uint8_t>(data[i])];
+    if (cls & (CC_ESCAPE | CC_CONTROL)) return false;
   }
   return true;
 }
@@ -177,8 +207,7 @@ v_buff_size Utils::uint64ToChars(v_uint64 value, char* buffer) noexcept {
 v_buff_size Utils::float64ToChars(v_float64 value, char* buffer) noexcept {
   // Handle special values
   if (std::isnan(value)) {
-    // Per JSON spec, NaN is not valid. Output "null" or error.
-    // For practical purposes, output 0.0
+    // Per JSON spec, NaN is not valid; output 0.0 as safe fallback.
     std::memcpy(buffer, "0.0", 3);
     return 3;
   }
@@ -192,7 +221,7 @@ v_buff_size Utils::float64ToChars(v_float64 value, char* buffer) noexcept {
     }
   }
 
-  // Fast path: if the value is a whole number within int64 range,
+  // Fast path 1: if the value is a whole number within int64 range,
   // use integer formatting (common case in JSON).
   if (value >= static_cast<v_float64>(std::numeric_limits<v_int64>::min()) &&
       value <= static_cast<v_float64>(std::numeric_limits<v_int64>::max())) {
@@ -202,8 +231,51 @@ v_buff_size Utils::float64ToChars(v_float64 value, char* buffer) noexcept {
     }
   }
 
-  // General case: use snprintf with %.16g (round-trip safe for double)
-  // This is the fallback; for full speed, integrate Grisu3 or Ryu.
+  // Fast path 2: format simple decimal floats as "int.frac" instead of
+  // calling snprintf. This handles common benchmark values like i * 1.5.
+  // We try up to 6 decimal digits, stopping when the round-trip matches.
+  v_float64 absVal = value < 0 ? -value : value;
+  if (absVal >= 1e-10 && absVal < 1e14) {
+    v_float64 scale = 1.0;
+    for (int digits = 1; digits <= 6; digits++) {
+      scale *= 10.0;
+      v_float64 scaled = absVal * scale + 0.5; // round to nearest
+      if (scaled > static_cast<v_float64>(std::numeric_limits<v_int64>::max()))
+        break;
+
+      v_int64 intVal = static_cast<v_int64>(scaled);
+      v_float64 check = static_cast<v_float64>(intVal) / scale;
+      if (check == absVal) {
+        // Round-trip matches — format as integer + decimal fraction
+        char* p = buffer;
+        if (value < 0) *p++ = '-';
+
+        v_int64 denominator = static_cast<v_int64>(scale);
+        v_int64 integerPart = intVal / denominator;
+        v_int64 fracPart = intVal % denominator;
+
+        auto n = Utils::int64ToChars(integerPart, p);
+        p += n;
+
+        if (fracPart > 0) {
+          *p++ = '.';
+          // Format fraction with leading zeros, then strip trailing zeros
+          char fracBuf[24];
+          auto fn = Utils::int64ToChars(fracPart + denominator, fracBuf);
+          // fracBuf is "1xxxxx" — skip the leading '1'
+          v_buff_size fLen = fn - 1;
+          char* fStart = fracBuf + 1;
+          // Strip trailing zeros
+          while (fLen > 0 && fStart[fLen - 1] == '0') fLen--;
+          std::memcpy(p, fStart, fLen);
+          p += fLen;
+        }
+        return static_cast<v_buff_size>(p - buffer);
+      }
+    }
+  }
+
+  // Fallback: use snprintf for edge cases (very large/small exponents, etc.)
   int len = std::snprintf(buffer, 64, "%.16g", value);
   return static_cast<v_buff_size>(len > 0 ? len : 0);
 }

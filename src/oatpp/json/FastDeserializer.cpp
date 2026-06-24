@@ -701,6 +701,17 @@ static bool deserializeObject(
   result = dispatcher->createObject();
   auto* object = static_cast<oatpp::BaseObject*>(result.get());
 
+  /*
+   * Sequential property cache: track the next-expected property pointer.
+   * JSON objects typically arrive with fields in DTO schema order. When
+   * the incoming key matches the next property in the ordered list, we
+   * skip the unordered_map hash lookup entirely — just advance the pointer.
+   * On the first mismatch we disable the cache for the rest of this object.
+   */
+  const auto& propList = props->getList();
+  auto nextPropIt = propList.begin();
+  bool useSequentialCache = true;
+
   while (idx < items.size()) {
     /* Empty object — '}' ends immediately */
     if (items[idx].type == '}') { idx++; break; }
@@ -716,17 +727,36 @@ static bool deserializeObject(
 
     /* Look up the field in the DTO's property map */
     const oatpp::BaseObject::Property* prop = nullptr;
-    if (mapperConfig.useUnqualifiedFieldNames) {
-      auto uit = props->getUnqualifiedMap().find(key);
-      if (uit != props->getUnqualifiedMap().end()) prop = uit->second;
-    } else {
-      auto it = props->getMap().find(key);
-      if (it != props->getMap().end()) {
-        prop = it->second;
+
+    /* Fast path: try the next-expected property in schema order */
+    if (useSequentialCache && nextPropIt != propList.end()) {
+      const auto& candidate = *nextPropIt;
+      const std::string& expectedKey = mapperConfig.useUnqualifiedFieldNames
+          ? candidate->unqualifiedName : candidate->name;
+      if (expectedKey.size() == static_cast<size_t>(key->size()) &&
+          std::memcmp(expectedKey.data(), key->data(), expectedKey.size()) == 0) {
+        prop = candidate;
+        ++nextPropIt;
       } else {
-        /* Fallback: also try unqualified names for backward compatibility */
+        /* Mismatch — disable sequential cache for the rest of this object */
+        useSequentialCache = false;
+      }
+    }
+
+    if (!prop) {
+      /* Slow path: full map lookup */
+      if (mapperConfig.useUnqualifiedFieldNames) {
         auto uit = props->getUnqualifiedMap().find(key);
         if (uit != props->getUnqualifiedMap().end()) prop = uit->second;
+      } else {
+        auto it = props->getMap().find(key);
+        if (it != props->getMap().end()) {
+          prop = it->second;
+        } else {
+          /* Fallback: also try unqualified names for backward compatibility */
+          auto uit = props->getUnqualifiedMap().find(key);
+          if (uit != props->getUnqualifiedMap().end()) prop = uit->second;
+        }
       }
     }
 
