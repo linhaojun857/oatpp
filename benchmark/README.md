@@ -1,6 +1,6 @@
-# oatpp Benchmark Suite
+# oatpp Benchmark
 
-HTTP benchmark suite with 10 scenarios, sync + async servers, live-updating web dashboard, and flamegraph profiling.
+HTTP benchmark with 10 scenarios, sync + async servers, live-updating web dashboard, and flamegraph profiling.
 
 ## Quick Start
 
