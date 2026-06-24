@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-oatpp Benchmark Suite — local web dashboard with live-updating results.
+oatpp Benchmark — local web dashboard with live-updating results.
 
 Usage:
   python3 run-benchmark.py -m MODE [-s SCENARIO ...] [-p] [-l]
@@ -42,7 +42,7 @@ FLAMEGRAPH_DIR = os.path.join(ROOT, "benchmark", "results", "FlameGraph")
 # ---------------------------------------------------------------------------
 # Parse args
 # ---------------------------------------------------------------------------
-parser = argparse.ArgumentParser(description="oatpp Benchmark Suite")
+parser = argparse.ArgumentParser(description="oatpp Benchmark")
 parser.add_argument("-m", "--mode", default="sync", choices=["sync", "async"],
                     help="Server mode: 'sync' or 'async' (default: sync)")
 parser.add_argument("-s", "--scenario", nargs="+", default=[],
@@ -182,56 +182,42 @@ def resolve_lib_debuginfo(server_proc):
 
 
 def _try_install_dbg_packages(lib_paths):
-    """Auto-install debug symbol packages via apt.
+    """Register shared libraries with perf's buildid cache so symbols are
+    resolved without needing separate -dbg packages.
 
-    Perf automatically picks up symbols from /usr/lib/debug/ after installation.
-    Only attempts packages that actually exist in the apt repository.
+    Perf records the build-id of each mapped library.  Later, ``perf script``
+    looks up those build-ids to find symbol tables.  If a locally installed
+    library has a matching build-id, adding it to the cache is enough —
+    no debug-symbol package is required.
     """
-    if not shutil.which("apt-get"):
-        print("  Install debug symbols manually: sudo apt install libc6-dbg libstdc++6-XX-dbg",
-              flush=True)
+    if not shutil.which("perf"):
         return
 
-    pkgs = set()
+    to_add = []
     for lp in lib_paths:
+        if not os.path.isfile(lp):
+            continue
         bn = os.path.basename(lp)
-        if "libc." in bn or "libm." in bn:
-            pkgs.add("libc6-dbg")
-        elif "libstdc++" in bn:
-            gcc_ver_out = subprocess.run(
-                ["gcc", "--version"], capture_output=True, text=True
-            ).stdout
-            # gcc --version formats:
-            #   "gcc (Ubuntu 11.4.0-...) 11.4.0"
-            #   "gcc version 11.4.0"
-            gcc_m = re.search(r'gcc.*?(\d+)\.\d+\.\d+', gcc_ver_out)
-            if gcc_m:
-                # Ubuntu package: libstdc++6-11-dbg
-                pkg_name = f"libstdc++6-{gcc_m.group(1)}-dbg"
-                # Verify it exists in apt cache before adding
-                check = subprocess.run(["apt-cache", "show", pkg_name],
-                                       capture_output=True, check=False)
-                if check.returncode == 0:
-                    pkgs.add(pkg_name)
+        # Only care about key system libs whose symbols often go missing
+        if not ("libstdc++" in bn or "libc." in bn or "libm." in bn or "libgcc" in bn):
+            continue
+        # Check if already cached
+        r = subprocess.run(
+            ["perf", "buildid-cache", "--list"], capture_output=True, text=True
+        )
+        if lp in r.stdout:
+            continue
+        to_add.append(lp)
 
-    if not pkgs:
+    if not to_add:
         return
 
-    # Check which packages are already installed
-    missing = []
-    for pkg in sorted(pkgs):
-        p = subprocess.run(["dpkg", "-s", pkg], capture_output=True, check=False)
-        if p.returncode != 0:
-            missing.append(pkg)
-
-    if not missing:
-        print("  Debug symbol packages already installed.", flush=True)
-        return
-
-    print(f"  Installing debug symbol packages: {' '.join(missing)}", flush=True)
-    # Let sudo interact with the user's real terminal for password
+    # perf buildid-cache --add is fast and requires sudo
+    print(f"  Adding {len(to_add)} lib(s) to perf buildid-cache...", flush=True)
+    for lp in to_add:
+        print(f"    {lp}", flush=True)
     subprocess.run(
-        ["sudo", "apt-get", "install", "-y"] + missing,
+        ["sudo", "perf", "buildid-cache", "--add"] + to_add,
         stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, check=False
     )
 
@@ -241,7 +227,7 @@ def start_perf(pid):
     PERF_PID = pid
     if os.path.exists(PERF_DATA):
         os.remove(PERF_DATA)
-    # --call-graph dwarf,4096: DWARF unwinding, 4KB stack dump (faster decode)
+    # --call-graph dwarf,4096: DWARF unwinding, 4KB stack dump
     # -F 99: Brendan Gregg's standard rate — enough samples, manageable data
     cmd = ["perf", "record", "--call-graph", "dwarf,4096",
            "-F", "99", "-p", str(pid), "-o", PERF_DATA,
@@ -291,7 +277,10 @@ def generate_flamegraph(label=""):
         # Shell pipe: all three processes run concurrently, output → file directly
         # --no-inline: skip inline expansion (350× faster, preferred for flamegraphs)
         pipe_cmd = (
-            f"perf script --no-inline -i {shlex.quote(PERF_DATA)}"
+            f"perf script --no-inline --kallsyms=/proc/kallsyms -i {shlex.quote(PERF_DATA)}"
+            # ffffffffffffffff is a perf synthetic marker (context-switch / lost event),
+            # not a real address — filter it out so it does not appear as [unknown].
+            f" | grep -v ffffffffffffffff"
             f" | perl {shlex.quote(stackcollapse)}"
             f" | perl {shlex.quote(flamegraph)}"
             f" --title {shlex.quote(f'oatpp {SERVER_TYPE} flamegraph')}"

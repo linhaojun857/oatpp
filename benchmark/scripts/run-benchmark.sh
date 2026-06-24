@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# oatpp Benchmark Suite
+# oatpp Benchmark
 # Usage:
 #   ./run-benchmark.sh -m sync               # run all scenarios (sync mode)
 #   ./run-benchmark.sh -m async              # run all scenarios (async mode)
