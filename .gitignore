@@ -54,3 +54,9 @@ docker-compose.yml
 .vs/
 out/
 CMakeSettings.json
+
+# Python
+__pycache__/
+
+# Benchmark outputs
+benchmark/results/
