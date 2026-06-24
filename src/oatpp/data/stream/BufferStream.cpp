@@ -34,17 +34,29 @@ namespace oatpp { namespace data{ namespace stream {
 data::stream::DefaultInitializedContext BufferOutputStream::DEFAULT_CONTEXT(data::stream::StreamType::STREAM_INFINITE);
 
 BufferOutputStream::BufferOutputStream(v_buff_size initialCapacity, const std::shared_ptr<void>& captureData)
-  : m_data(new v_char8[static_cast<unsigned long>(initialCapacity)])
-  , m_capacity(initialCapacity)
+  : m_data(reinterpret_cast<p_char8>(m_stackBuf))
+  , m_capacity(STACK_BUFFER_SIZE)
   , m_position(0)
   , m_maxCapacity(-1)
   , m_ioMode(IOMode::ASYNCHRONOUS)
+  , m_heapAllocated(false)
   , m_capturedData(captureData)
-{}
+{
+  // For small outputs (≤ STACK_BUFFER_SIZE) we use the embedded m_stackBuf
+  // avoiding heap allocation entirely. If initialCapacity > STACK_BUFFER_SIZE
+  // the caller explicitly wants a larger buffer — go to heap immediately.
+  if (initialCapacity > STACK_BUFFER_SIZE) {
+    m_data = new v_char8[static_cast<unsigned long>(initialCapacity)];
+    m_capacity = initialCapacity;
+    m_heapAllocated = true;
+  }
+}
 
 BufferOutputStream::~BufferOutputStream() {
-  m_capturedData.reset(); // reset capture data before deleting data.
-  delete [] m_data;
+  m_capturedData.reset();
+  if (m_heapAllocated) {
+    delete [] m_data;
+  }
 }
 
 v_io_size BufferOutputStream::write(const void *data, v_buff_size count, async::Action& action) {
@@ -95,11 +107,14 @@ void BufferOutputStream::reserveBytesUpfront(v_buff_size count) {
     }
 
     auto newData = new v_char8[static_cast<unsigned long>(newCapacity)];
-
     std::memcpy(newData, m_data, static_cast<size_t>(m_position));
-    delete [] m_data;
+
+    if (m_heapAllocated) {
+      delete [] m_data;
+    }
     m_data = newData;
     m_capacity = newCapacity;
+    m_heapAllocated = true;
 
   }
 
@@ -125,9 +140,18 @@ void BufferOutputStream::setCurrentPosition(v_buff_size position) {
 }
 
 void BufferOutputStream::reset(v_buff_size initialCapacity) {
-  delete [] m_data;
-  m_data = new v_char8[static_cast<unsigned long>(initialCapacity)];
-  m_capacity = initialCapacity;
+  if (m_heapAllocated) {
+    delete [] m_data;
+  }
+  if (initialCapacity <= STACK_BUFFER_SIZE) {
+    m_data = reinterpret_cast<p_char8>(m_stackBuf);
+    m_capacity = STACK_BUFFER_SIZE;
+    m_heapAllocated = false;
+  } else {
+    m_data = new v_char8[static_cast<unsigned long>(initialCapacity)];
+    m_capacity = initialCapacity;
+    m_heapAllocated = true;
+  }
   m_position = 0;
 }
 

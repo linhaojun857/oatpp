@@ -101,6 +101,17 @@ public:
     virtual v_int64 getCollectionSize(const type::Void& object) const = 0;
 
     /**
+     * Pre-allocate space for items to avoid repeated reallocation.
+     * Default is a no-op. Override in StandardCollection to call vector::reserve.
+     * @param object - Collection.
+     * @param count - expected number of items.
+     */
+    virtual void reserve(const type::Void& object, v_int64 count) const {
+      (void)object;
+      (void)count;
+    }
+
+    /**
      * Add item.
      * @param object - Collection.
      * @param item - Item to add.
@@ -167,6 +178,20 @@ public:
     v_int64 getCollectionSize(const type::Void& object) const override {
       ContainerType* collection = static_cast<ContainerType*>(object.get());
       return static_cast<v_int64>(collection->size());
+    }
+
+  private:
+    template<typename C>
+    static auto tryReserveImpl(C* c, size_t n, int) -> decltype(c->reserve(n), void()) {
+      c->reserve(n);
+    }
+    template<typename C>
+    static void tryReserveImpl(C*, size_t, ...) { /* no-op */ }
+  public:
+
+    void reserve(const type::Void& object, v_int64 count) const override {
+      ContainerType* collection = static_cast<ContainerType*>(object.get());
+      tryReserveImpl(collection, static_cast<size_t>(count), 0);
     }
 
     void addItem(const type::Void& object, const type::Void& item) const override {

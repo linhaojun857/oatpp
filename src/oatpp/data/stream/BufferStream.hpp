@@ -35,12 +35,15 @@ namespace oatpp { namespace data{ namespace stream {
 class BufferOutputStream : public ConsistentOutputStream {
 public:
   static data::stream::DefaultInitializedContext DEFAULT_CONTEXT;
+  static constexpr v_buff_size STACK_BUFFER_SIZE = 4096;
 private:
   p_char8 m_data;
   v_buff_size m_capacity;
   v_buff_size m_position;
   v_buff_size m_maxCapacity;
   IOMode m_ioMode;
+  bool m_heapAllocated; // true once the buffer outgrows the stack buffer
+  char m_stackBuf[STACK_BUFFER_SIZE]; // avoid heap allocation for small outputs
 private:
   std::shared_ptr<void> m_capturedData;
 public:

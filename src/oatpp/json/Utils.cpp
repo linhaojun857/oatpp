@@ -351,10 +351,9 @@ bool Utils::parseUInt64(const char* data, v_buff_size len, v_uint64& result) noe
 bool Utils::parseFloat64(const char* data, v_buff_size len, v_float64& result) noexcept {
   if (len == 0) return false;
 
-  // Fast path: try integer parse first (most JSON numbers are integers)
+  // Fast path 1: try integer parse first (most JSON numbers are integers)
   v_int64 intVal;
   if (parseInt64(data, len, intVal)) {
-    // Verify no '.', 'e', 'E' in the input — otherwise it's a float like "1.5"
     bool isPureInt = true;
     for (v_buff_size j = 0; j < len; j++) {
       if (data[j] == '.' || data[j] == 'e' || data[j] == 'E') { isPureInt = false; break; }
@@ -365,18 +364,8 @@ bool Utils::parseFloat64(const char* data, v_buff_size len, v_float64& result) n
     }
   }
 
-  // For floats with exponents or large precision needs, fall back to strtod
-  // (custom pow-based parsing has precision issues with large exponents)
-  char buf[128];
-  if (len < sizeof(buf) - 1) {
-    std::memcpy(buf, data, len);
-    buf[len] = '\0';
-    char* endp = nullptr;
-    result = std::strtod(buf, &endp);
-    return (endp == buf + len);
-  }
-
-  // General float parse: sign, integer part, optional fraction, optional exponent
+  // Fast path 2: manual parsing without strtod.
+  // Avoids libc strtod overhead (locale, error handling, etc.).
   v_buff_size i = 0;
 
   // Sign
@@ -390,7 +379,7 @@ bool Utils::parseFloat64(const char* data, v_buff_size len, v_float64& result) n
   v_float64 value = 0.0;
   bool hasDigits = false;
   while (i < len && (CHAR_CLASS[static_cast<uint8_t>(data[i])] & CC_DIGIT)) {
-    value = value * 10.0 + (data[i] - '0');
+    value = value * 10.0 + static_cast<v_float64>(data[i] - '0');
     hasDigits = true;
     i++;
   }
@@ -400,7 +389,7 @@ bool Utils::parseFloat64(const char* data, v_buff_size len, v_float64& result) n
     i++;
     v_float64 fracWeight = 0.1;
     while (i < len && (CHAR_CLASS[static_cast<uint8_t>(data[i])] & CC_DIGIT)) {
-      value += (data[i] - '0') * fracWeight;
+      value += static_cast<v_float64>(data[i] - '0') * fracWeight;
       fracWeight *= 0.1;
       hasDigits = true;
       i++;
@@ -409,14 +398,25 @@ bool Utils::parseFloat64(const char* data, v_buff_size len, v_float64& result) n
 
   if (!hasDigits) return false;
 
-  // Exponent part
+  // Exponent part — use strtod for anything beyond trivial exponents
+  // to guarantee round-trip precision for edge cases like 1.2345e30.
   if (i < len && (data[i] == 'e' || data[i] == 'E')) {
+    // Fall back to strtod for numbers with exponents
+    char buf[128];
+    if (len < static_cast<v_buff_size>(sizeof(buf) - 1)) {
+      std::memcpy(buf, data, static_cast<size_t>(len));
+      buf[len] = '\0';
+      char* endp = nullptr;
+      result = std::strtod(buf, &endp);
+      return (endp == buf + len);
+    }
+    // Buffer too large — rare edge case, use pow fallback
     i++;
-    v_int64 expVal = 0;
     bool expNegative = false;
     if (i < len && data[i] == '-') { expNegative = true; i++; }
     else if (i < len && data[i] == '+') { i++; }
 
+    v_int32 expVal = 0;
     bool hasExpDigits = false;
     while (i < len && (CHAR_CLASS[static_cast<uint8_t>(data[i])] & CC_DIGIT)) {
       expVal = expVal * 10 + (data[i] - '0');
@@ -424,13 +424,11 @@ bool Utils::parseFloat64(const char* data, v_buff_size len, v_float64& result) n
       i++;
     }
     if (!hasExpDigits) return false;
-
-    // Compute power of 10 (using std::pow for safety)
     v_float64 expFactor = std::pow(10.0, static_cast<v_float64>(expNegative ? -expVal : expVal));
     value *= expFactor;
   }
 
-  if (i < len) return false;  // trailing garbage
+  if (i < len) return false;
 
   result = sign * value;
   return true;

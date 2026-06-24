@@ -769,11 +769,8 @@ static bool deserializeArrayCursor(
       if (depth == 0 && c == ',') { count++; }
       scanPos++;
     }
-    if (!isEmpty && count + 1 > 0) {
-      // Try to reserve — the dispatcher may or may not support this.
-      // For Vector<T>, dispatcher->createObject() + repeated addItem is the
-      // only public API; we skip reserve to keep things general.
-      (void)count; // reserved for future dispatcher->reserve() call
+    if (!isEmpty && count > 0) {
+      dispatcher->reserve(result, static_cast<v_int64>(count + 1));
     }
   }
 
